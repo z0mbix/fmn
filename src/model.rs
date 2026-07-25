@@ -60,6 +60,19 @@ pub struct CommandSummary {
     pub use_count: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchCandidate {
+    pub id: i64,
+    pub command: String,
+    pub first_seen_at: i64,
+    pub last_seen_at: i64,
+    pub use_count: i64,
+    pub cwd_use_count: i64,
+    pub cwd_last_seen_at: Option<i64>,
+    pub latest_cwd: String,
+    pub latest_exit_code: Option<i32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::Shell;

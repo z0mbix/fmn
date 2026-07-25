@@ -21,6 +21,12 @@ enum Command {
     Init {
         shell: Shell,
     },
+    Search {
+        #[arg(long, default_value = "")]
+        query: String,
+        #[arg(long)]
+        cwd: Option<String>,
+    },
     History {
         #[command(subcommand)]
         command: HistoryCommand,
@@ -77,7 +83,7 @@ struct RecordFinishArgs {
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(exit_code) => exit_code,
         Err(error) => {
             eprintln!("fmn: {error}");
             ExitCode::from(2)
@@ -85,14 +91,14 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> fmn::Result<()> {
+fn run(cli: Cli) -> fmn::Result<ExitCode> {
     if let Command::Session = cli.command {
         println!("{}", uuid::Uuid::new_v4());
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
     if let Command::Init { shell } = cli.command {
         print!("{}", fmn::shell::init_script(shell));
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     let paths = AppPaths::discover()?;
@@ -103,6 +109,18 @@ fn run(cli: Cli) -> fmn::Result<()> {
     match cli.command {
         Command::Init { .. } => unreachable!(),
         Command::Session => unreachable!(),
+        Command::Search { query, cwd } => {
+            let cwd = cwd.unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            match fmn::tui::run(&mut store, query, cwd)? {
+                Some(command) => print!("{command}"),
+                None => return Ok(ExitCode::from(1)),
+            }
+        }
         Command::RecordStart(args) => {
             let mut command = String::new();
             std::io::stdin().read_to_string(&mut command)?;
@@ -126,7 +144,7 @@ fn run(cli: Cli) -> fmn::Result<()> {
         }
         Command::History { command } => run_history(command, &mut store)?,
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run_history(command: HistoryCommand, store: &mut Store) -> fmn::Result<()> {

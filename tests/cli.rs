@@ -93,3 +93,15 @@ fn clear_requires_yes_when_noninteractive() {
         .failure()
         .stderr(predicate::str::contains("requires --yes"));
 }
+
+#[test]
+fn search_requires_an_interactive_terminal() {
+    let root = tempfile::tempdir().unwrap();
+    fmn(root.path())
+        .args(["search", "--query", "git"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "search requires an interactive terminal",
+        ));
+}

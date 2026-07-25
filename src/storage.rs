@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::model::{CommandSummary, Entry, Shell};
+use crate::model::{CommandSummary, Entry, SearchCandidate, Shell};
 use crate::{Error, Result};
 
 const SCHEMA: &str = r#"
@@ -176,6 +176,62 @@ impl Store {
                 use_count: row.get(4)?,
             })
         })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn search_candidates(&self, cwd: &str) -> Result<Vec<SearchCandidate>> {
+        let mut statement = self.connection.prepare(
+            "SELECT
+                c.id,
+                c.command,
+                c.first_seen_at,
+                c.last_seen_at,
+                c.use_count,
+                COALESCE(SUM(CASE WHEN e.cwd = ?1 THEN 1 ELSE 0 END), 0),
+                MAX(CASE WHEN e.cwd = ?1 THEN e.started_at END),
+                (
+                    SELECT newest.cwd FROM entries newest
+                    WHERE newest.command_id = c.id
+                    ORDER BY newest.started_at DESC, newest.id DESC LIMIT 1
+                ),
+                (
+                    SELECT newest.exit_code FROM entries newest
+                    WHERE newest.command_id = c.id
+                    ORDER BY newest.started_at DESC, newest.id DESC LIMIT 1
+                )
+             FROM commands c
+             JOIN entries e ON e.command_id = c.id
+             GROUP BY c.id
+             ORDER BY c.last_seen_at DESC, c.id DESC",
+        )?;
+        let rows = statement.query_map([cwd], |row| {
+            Ok(SearchCandidate {
+                id: row.get(0)?,
+                command: row.get(1)?,
+                first_seen_at: row.get(2)?,
+                last_seen_at: row.get(3)?,
+                use_count: row.get(4)?,
+                cwd_use_count: row.get(5)?,
+                cwd_last_seen_at: row.get(6)?,
+                latest_cwd: row.get(7)?,
+                latest_exit_code: row.get(8)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn entries_for_command(&self, command_id: i64) -> Result<Vec<Entry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT e.id, e.command_id, c.command, e.started_at, e.finished_at,
+                    e.duration_ms, e.exit_code, e.cwd, e.shell, e.session_id, e.source
+             FROM entries e
+             JOIN commands c ON c.id = e.command_id
+             WHERE e.command_id = ?1
+             ORDER BY e.started_at DESC, e.id DESC",
+        )?;
+        let rows = statement.query_map([command_id], map_entry)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -405,5 +461,29 @@ mod tests {
             .unwrap();
         store.record_finish("a", 50, 0).unwrap();
         assert_eq!(store.entries(1).unwrap()[0].duration_ms, Some(0));
+    }
+
+    #[test]
+    fn search_candidates_include_global_and_cwd_metadata() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .record_start("git status", 10, "/repo", Shell::Fish, "a")
+            .unwrap();
+        store.record_finish("a", 11, 0).unwrap();
+        store
+            .record_start("git status", 20, "/other", Shell::Fish, "b")
+            .unwrap();
+        store.record_finish("b", 21, 1).unwrap();
+        let candidates = store.search_candidates("/repo").unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].use_count, 2);
+        assert_eq!(candidates[0].cwd_use_count, 1);
+        assert_eq!(candidates[0].cwd_last_seen_at, Some(10));
+        assert_eq!(candidates[0].latest_cwd, "/other");
+        assert_eq!(candidates[0].latest_exit_code, Some(1));
+        assert_eq!(
+            store.entries_for_command(candidates[0].id).unwrap().len(),
+            2
+        );
     }
 }
