@@ -1,0 +1,76 @@
+use std::fs;
+use std::path::Path;
+
+use serde::Deserialize;
+
+use crate::{Error, Result};
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    pub history: HistoryConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct HistoryConfig {
+    pub ignore_leading_space: bool,
+    pub ignore_patterns: Vec<String>,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            ignore_leading_space: true,
+            ignore_patterns: Vec::new(),
+        }
+    }
+}
+
+impl Config {
+    pub fn load(path: &Path) -> Result<Self> {
+        match fs::read_to_string(path) {
+            Ok(contents) => toml::from_str(&contents).map_err(|source| Error::InvalidConfig {
+                path: path.to_path_buf(),
+                source,
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn missing_config_uses_defaults() {
+        let root = tempfile::tempdir().unwrap();
+        let config = Config::load(&root.path().join("missing.toml")).unwrap();
+        assert!(config.history.ignore_leading_space);
+        assert!(config.history.ignore_patterns.is_empty());
+    }
+
+    #[test]
+    fn loads_valid_config() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[history]\nignore_leading_space = false\nignore_patterns = ['secret *']\n",
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(!config.history.ignore_leading_space);
+        assert_eq!(config.history.ignore_patterns, ["secret *"]);
+    }
+
+    #[test]
+    fn rejects_unknown_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.toml");
+        std::fs::write(&path, "[history]\nunknown = true\n").unwrap();
+        assert!(Config::load(&path).is_err());
+    }
+}

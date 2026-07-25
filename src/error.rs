@@ -1,0 +1,27 @@
+use std::path::PathBuf;
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("database error: {0}")]
+    Database(#[from] rusqlite::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("could not determine the home directory")]
+    HomeDirectoryUnavailable,
+    #[error("invalid configuration in {path}: {source}")]
+    InvalidConfig {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+    #[error("invalid ignore pattern {pattern:?}: {source}")]
+    InvalidIgnorePattern {
+        pattern: String,
+        source: globset::Error,
+    },
+    #[error("entry {0} does not exist")]
+    EntryNotFound(i64),
+    #[error("command {0} does not exist")]
+    CommandNotFound(i64),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
