@@ -286,9 +286,11 @@ impl Store {
         transaction.execute("DELETE FROM entries", [])?;
         transaction.execute("DELETE FROM commands", [])?;
         transaction.commit()?;
-        let _ = self
-            .connection
-            .pragma_update(None, "wal_checkpoint", "TRUNCATE");
+        let _: (i64, i64, i64) =
+            self.connection
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?;
         Ok(())
     }
 

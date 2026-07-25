@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A small, local-first shell history manager"
+license = "MIT"
+repository = "https://github.com/z0mbix/fmn"
+homepage = "https://github.com/z0mbix/fmn"
+readme = "README.md"
+keywords = ["shell", "history", "tui", "fish", "sqlite"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -33,3 +39,8 @@ harness = false
 [profile.release]
 lto = "thin"
 strip = "symbols"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

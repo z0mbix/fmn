@@ -76,11 +76,14 @@ if [[ -o interactive && -z ${__FMN_INITIALIZED-} ]]; then
     __fmn_search_widget() {
         local __fmn_result
         zle -I
-        __fmn_result="$(command fmn search --query "$BUFFER" --cwd "$PWD")"
+        __fmn_result="$(command fmn search --query "$BUFFER" --cwd "$PWD" \
+            --shell-integration 3>&1 1>&2 2>&3 0<&1 3>&-)"
         local __fmn_search_status=$?
         if (( __fmn_search_status == 0 )); then
             BUFFER="$__fmn_result"
             CURSOR=${#BUFFER}
+        elif [[ -n "$__fmn_result" ]]; then
+            print -r -- "$__fmn_result" >&2
         fi
         zle reset-prompt
     }

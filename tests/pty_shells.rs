@@ -66,6 +66,64 @@ fn assert_captured(data_dir: &Path, shell: &str) {
     assert_eq!(failure.exit_code, Some(1));
 }
 
+fn run_ctrl_r_expect(command: &[&str], data_dir: &Path, extra_env: &[(&str, &Path)]) {
+    let script = r#"
+set timeout 5
+log_user 0
+spawn -noecho {*}$argv
+expect "FMN> "
+send -- "echo ctrl-r-found\r"
+expect "ctrl-r-found"
+expect "FMN> "
+send -- "\022"
+after 500
+send -- "\r"
+after 200
+send -- "\r"
+expect "ctrl-r-found"
+expect "FMN> "
+send -- "exit\r"
+expect eof
+"#;
+    let mut script_file = tempfile::NamedTempFile::new().unwrap();
+    script_file.write_all(script.as_bytes()).unwrap();
+    let path = format!(
+        "{}:{}",
+        binary_dir().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut expect = Command::new("expect");
+    expect.arg(script_file.path()).args(command);
+    expect
+        .env("PATH", path)
+        .env("FMN_DATA_DIR", data_dir)
+        .env("FMN_CONFIG", data_dir.join("config.toml"));
+    for (name, value) in extra_env {
+        expect.env(name, value);
+    }
+    let output = expect.output().unwrap();
+    assert!(
+        output.status.success(),
+        "Ctrl-R PTY flow failed for {command:?}:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let store = Store::open(&data_dir.join("history.db")).unwrap();
+    let count = store
+        .entries(20)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.command == "echo ctrl-r-found")
+        .count();
+    assert_eq!(
+        count,
+        2,
+        "selection must wait for the second Enter\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 #[test]
 fn bash_interactive_capture_preserves_exit_status() {
     let root = tempfile::tempdir().unwrap();
@@ -206,5 +264,23 @@ expect eof
         2,
         "the selected command should execute only after the second Enter\n{}",
         String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn bash_ctrl_r_inserts_without_executing_until_enter() {
+    let root = tempfile::tempdir().unwrap();
+    let rc = root.path().join("bashrc");
+    std::fs::write(&rc, "PS1='FMN> '\neval \"$(fmn init bash)\"\n").unwrap();
+    run_ctrl_r_expect(
+        &[
+            "bash",
+            "--noprofile",
+            "--rcfile",
+            rc.to_str().unwrap(),
+            "-i",
+        ],
+        &root.path().join("data"),
+        &[],
     );
 }

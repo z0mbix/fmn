@@ -11,6 +11,9 @@ test:
 
 check: fmt lint test
 
+shellcheck:
+    cargo run --quiet -- init bash | shellcheck -s bash -
+
 coverage:
     rustup run stable cargo llvm-cov --all-features --lib --tests --fail-under-lines 90
 
@@ -25,3 +28,11 @@ fuzz target="import_parse":
 
 mutants:
     cargo mutants --workspace
+
+deny:
+    cargo deny check
+
+release-check: check shellcheck coverage
+    cargo check --manifest-path fuzz/Cargo.toml --all-targets
+    dist generate --check
+    dist plan

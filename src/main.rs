@@ -28,6 +28,8 @@ enum Command {
         query: String,
         #[arg(long)]
         cwd: Option<String>,
+        #[arg(long, hide = true)]
+        shell_integration: bool,
     },
     Import {
         shell: Shell,
@@ -145,15 +147,30 @@ fn run(cli: Cli) -> fmn::Result<ExitCode> {
         }
         Command::Init { .. } => unreachable!(),
         Command::Session => unreachable!(),
-        Command::Search { query, cwd } => {
+        Command::Search {
+            query,
+            cwd,
+            shell_integration,
+        } => {
             let cwd = cwd.unwrap_or_else(|| {
                 std::env::current_dir()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned()
             });
-            match fmn::tui::run(&mut store, query, cwd)? {
-                Some(command) => print!("{command}"),
+            let selection = if shell_integration {
+                fmn::tui::run_for_shell(&mut store, query, cwd)?
+            } else {
+                fmn::tui::run(&mut store, query, cwd)?
+            };
+            match selection {
+                Some(command) => {
+                    if shell_integration {
+                        eprint!("{command}");
+                    } else {
+                        print!("{command}");
+                    }
+                }
                 None => return Ok(ExitCode::from(1)),
             }
         }

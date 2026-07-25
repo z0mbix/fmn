@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -254,9 +254,27 @@ pub fn run(store: &mut Store, query: String, cwd: String) -> Result<Option<Strin
         )));
     }
 
+    run_with_backend(store, query, cwd, io::stderr())
+}
+
+pub fn run_for_shell(store: &mut Store, query: String, cwd: String) -> Result<Option<String>> {
+    if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
+        return Err(Error::Io(io::Error::other(
+            "search requires an interactive terminal",
+        )));
+    }
+    run_with_backend(store, query, cwd, io::stdout())
+}
+
+fn run_with_backend<W: Write>(
+    store: &mut Store,
+    query: String,
+    cwd: String,
+    writer: W,
+) -> Result<Option<String>> {
     let candidates = store.search_candidates(&cwd)?;
     let mut app = App::new(candidates, query, now_millis());
-    let mut terminal = TuiTerminal::enter()?;
+    let mut terminal = TuiTerminal::enter(writer)?;
 
     loop {
         terminal.terminal.draw(|frame| draw(frame, &app))?;
@@ -284,27 +302,27 @@ pub fn run(store: &mut Store, query: String, cwd: String) -> Result<Option<Strin
     }
 }
 
-struct TuiTerminal {
-    terminal: Terminal<CrosstermBackend<io::Stderr>>,
+struct TuiTerminal<W: Write> {
+    terminal: Terminal<CrosstermBackend<W>>,
 }
 
-impl TuiTerminal {
-    fn enter() -> Result<Self> {
+impl<W: Write> TuiTerminal<W> {
+    fn enter(writer: W) -> Result<Self> {
         enable_raw_mode().map_err(|error| {
             Error::Io(io::Error::new(
                 error.kind(),
                 format!("could not enable terminal raw mode: {error}"),
             ))
         })?;
-        let mut stderr = io::stderr();
-        if let Err(error) = execute!(stderr, EnterAlternateScreen) {
+        let mut writer = writer;
+        if let Err(error) = execute!(writer, EnterAlternateScreen) {
             let _ = disable_raw_mode();
             return Err(Error::Io(io::Error::new(
                 error.kind(),
                 format!("could not enter alternate screen: {error}"),
             )));
         }
-        let terminal = Terminal::new(CrosstermBackend::new(stderr)).map_err(|error| {
+        let terminal = Terminal::new(CrosstermBackend::new(writer)).map_err(|error| {
             Error::Io(io::Error::new(
                 error.kind(),
                 format!("could not initialize terminal: {error}"),
@@ -314,7 +332,7 @@ impl TuiTerminal {
     }
 }
 
-impl Drop for TuiTerminal {
+impl<W: Write> Drop for TuiTerminal<W> {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
