@@ -73,13 +73,31 @@ impl Store {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "secure_delete", "ON")?;
         if on_disk {
-            connection.pragma_update(None, "journal_mode", "WAL")?;
+            let journal_mode: String =
+                connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+            if !journal_mode.eq_ignore_ascii_case("wal") {
+                connection.pragma_update(None, "journal_mode", "WAL")?;
+            }
             connection.pragma_update(None, "synchronous", "NORMAL")?;
         }
         Ok(())
     }
 
     fn migrate(&mut self) -> Result<()> {
+        let migrations_exist: bool = self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'schema_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if migrations_exist {
+            let version = self.schema_version()?;
+            if version >= 1 {
+                return Ok(());
+            }
+        }
         let transaction = self.connection.transaction()?;
         transaction.execute_batch(SCHEMA)?;
         transaction.commit()?;
@@ -277,6 +295,18 @@ impl Store {
     pub fn integrity_check(&self) -> Result<String> {
         self.connection
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(Into::into)
+    }
+
+    pub fn journal_mode(&self) -> Result<String> {
+        self.connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .map_err(Into::into)
+    }
+
+    pub fn foreign_keys_enabled(&self) -> Result<bool> {
+        self.connection
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
             .map_err(Into::into)
     }
 

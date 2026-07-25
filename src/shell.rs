@@ -31,8 +31,9 @@ if status is-interactive; and not set -q __fmn_initialized
     end
 
     function __fmn_search
-        set -l __fmn_result (command fmn search --query (commandline) --cwd "$PWD" | string collect)
-        if test $status -eq 0
+        set -l __fmn_result "$(command fmn search --query (commandline) --cwd "$PWD")"
+        set -l __fmn_search_status $status
+        if test $__fmn_search_status -eq 0
             commandline --replace -- "$__fmn_result"
             commandline --cursor (string length -- "$__fmn_result")
         end
@@ -74,6 +75,7 @@ if [[ -o interactive && -z ${__FMN_INITIALIZED-} ]]; then
 
     __fmn_search_widget() {
         local __fmn_result
+        zle -I
         __fmn_result="$(command fmn search --query "$BUFFER" --cwd "$PWD")"
         local __fmn_search_status=$?
         if (( __fmn_search_status == 0 )); then

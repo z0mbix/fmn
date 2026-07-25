@@ -1,0 +1,50 @@
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use fmn::model::{SearchCandidate, Shell};
+use fmn::search;
+use fmn::storage::Store;
+
+fn ranking_benchmark(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("ranking");
+    for size in [1_000usize, 10_000, 100_000] {
+        let candidates: Vec<_> = (0..size)
+            .map(|index| SearchCandidate {
+                id: index as i64,
+                command: format!("git checkout feature-{index}"),
+                first_seen_at: index as i64,
+                last_seen_at: index as i64,
+                use_count: 1 + (index % 100) as i64,
+                cwd_use_count: (index % 5 == 0) as i64,
+                cwd_last_seen_at: (index % 5 == 0).then_some(index as i64),
+                latest_cwd: "/repo".into(),
+                latest_exit_code: Some(0),
+            })
+            .collect();
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size),
+            &candidates,
+            |bencher, candidates| {
+                bencher.iter(|| search::rank(candidates, "gco fea", false, 100_000))
+            },
+        );
+    }
+    group.finish();
+}
+
+fn recording_benchmark(criterion: &mut Criterion) {
+    criterion.bench_function("record_start_finish", |bencher| {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut index = 0_i64;
+        bencher.iter(|| {
+            index += 1;
+            let session = format!("bench-{index}");
+            store
+                .record_start("echo benchmark", index, "/tmp", Shell::Fish, &session)
+                .unwrap();
+            store.record_finish(&session, index + 1, 0).unwrap();
+        });
+    });
+}
+
+criterion_group!(benches, ranking_benchmark, recording_benchmark);
+criterion_main!(benches);

@@ -156,3 +156,15 @@ fn import_applies_privacy_filters() {
         .stdout(predicate::str::contains("imported=1"))
         .stdout(predicate::str::contains("ignored=1"));
 }
+
+#[test]
+fn doctor_reports_database_health() {
+    let root = tempfile::tempdir().unwrap();
+    fmn(root.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[ok] database integrity: ok"))
+        .stdout(predicate::str::contains("[ok] journal mode: wal"))
+        .stdout(predicate::str::contains("[warn] shell integration:"));
+}

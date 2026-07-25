@@ -290,13 +290,26 @@ struct TuiTerminal {
 
 impl TuiTerminal {
     fn enter() -> Result<Self> {
-        enable_raw_mode()?;
+        enable_raw_mode().map_err(|error| {
+            Error::Io(io::Error::new(
+                error.kind(),
+                format!("could not enable terminal raw mode: {error}"),
+            ))
+        })?;
         let mut stderr = io::stderr();
         if let Err(error) = execute!(stderr, EnterAlternateScreen) {
             let _ = disable_raw_mode();
-            return Err(error.into());
+            return Err(Error::Io(io::Error::new(
+                error.kind(),
+                format!("could not enter alternate screen: {error}"),
+            )));
         }
-        let terminal = Terminal::new(CrosstermBackend::new(stderr))?;
+        let terminal = Terminal::new(CrosstermBackend::new(stderr)).map_err(|error| {
+            Error::Io(io::Error::new(
+                error.kind(),
+                format!("could not initialize terminal: {error}"),
+            ))
+        })?;
         Ok(Self { terminal })
     }
 }
@@ -621,6 +634,125 @@ mod tests {
         );
         let backend = TestBackend::new(20, 7);
         let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+    }
+
+    #[test]
+    fn navigation_and_empty_states_are_safe() {
+        let mut empty = App::new(vec![], "x".into(), 1);
+        assert_eq!(empty.handle_key(key(KeyCode::Enter)), Intent::Cancel);
+        assert_eq!(empty.handle_key(key(KeyCode::F(2))), Intent::None);
+        empty.handle_key(key(KeyCode::Backspace));
+        assert!(empty.query.is_empty());
+
+        let mut app = App::new(
+            vec![candidate(1, "one", 1), candidate(2, "two", 1)],
+            String::new(),
+            1,
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(app.selected, 1);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.selected, 1);
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(app.selected, 0);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.selected, 0);
+        app.handle_key(KeyCode::Char('T').into());
+        assert_eq!(app.query, "T");
+        assert_eq!(app.handle_key(key(KeyCode::Right)), Intent::None);
+    }
+
+    #[test]
+    fn overlays_and_detail_management_cover_every_transition() {
+        let mut app = App::new(vec![candidate(7, "one", 1)], String::new(), 1);
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::CONTROL));
+        assert_eq!(app.view, View::Help);
+        app.handle_key(key(KeyCode::Char('q')));
+        assert_eq!(app.view, View::Main);
+
+        app.show_details(vec![
+            Entry {
+                id: 10,
+                command_id: 7,
+                command: "one".into(),
+                started_at: 1,
+                finished_at: Some(2),
+                duration_ms: Some(1),
+                exit_code: Some(1),
+                cwd: "/a".into(),
+                shell: "fish".into(),
+                session_id: "s".into(),
+                source: "live".into(),
+            },
+            Entry {
+                id: 11,
+                command_id: 7,
+                command: "one".into(),
+                started_at: 2,
+                finished_at: None,
+                duration_ms: None,
+                exit_code: None,
+                cwd: "/b".into(),
+                shell: "zsh".into(),
+                session_id: "s".into(),
+                source: "live".into(),
+            },
+        ]);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(app.detail_selected, 1);
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(app.detail_selected, 0);
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        app.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(
+            app.view,
+            View::Confirm {
+                mutation: Mutation::DeleteEntry(10),
+                input: String::new()
+            }
+        );
+        app.handle_key(key(KeyCode::Char('x')));
+        app.handle_key(key(KeyCode::Backspace));
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.view, View::Main);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), Intent::LoadDetails(7));
+        app.show_details(vec![]);
+        assert_eq!(app.handle_key(key(KeyCode::Left)), Intent::None);
+        assert_eq!(app.view, View::Main);
+    }
+
+    #[test]
+    fn renders_details_manage_confirm_and_status_variants() {
+        let mut failed = candidate(1, "failed\ncommand", 1);
+        failed.latest_exit_code = Some(2);
+        let mut unfinished = candidate(2, "unfinished", 1);
+        unfinished.latest_exit_code = None;
+        let mut app = App::new(vec![failed, unfinished], String::new(), 1);
+        let backend = TestBackend::new(90, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+
+        app.show_details(vec![Entry {
+            id: 10,
+            command_id: 1,
+            command: "failed\ncommand".into(),
+            started_at: 1,
+            finished_at: Some(2),
+            duration_ms: Some(1),
+            exit_code: Some(2),
+            cwd: "/tmp".into(),
+            shell: "bash".into(),
+            session_id: "s".into(),
+            source: "live".into(),
+        }]);
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        app.handle_key(key(KeyCode::Char('c')));
         terminal.draw(|frame| draw(frame, &app)).unwrap();
     }
 }

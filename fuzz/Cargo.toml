@@ -1,0 +1,39 @@
+[package]
+name = "fmn-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fmn = { path = ".." }
+crossterm = "0.29"
+toml = "0.9"
+
+[[bin]]
+name = "import_parse"
+path = "fuzz_targets/import_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tui_state"
+path = "fuzz_targets/tui_state.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+

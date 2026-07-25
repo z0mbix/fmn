@@ -21,9 +21,14 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 assert_cmd = "2"
+criterion = "0.8"
 predicates = "3"
 proptest = "1"
 tempfile = "3"
+
+[[bench]]
+name = "history"
+harness = false
 
 [profile.release]
 lto = "thin"

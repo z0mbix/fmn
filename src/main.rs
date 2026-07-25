@@ -19,6 +19,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Doctor,
     Init {
         shell: Shell,
     },
@@ -92,10 +93,21 @@ struct RecordFinishArgs {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    let hook_command = matches!(
+        &cli.command,
+        Command::RecordStart(_) | Command::RecordFinish(_)
+    );
+    match run(cli) {
         Ok(exit_code) => exit_code,
         Err(error) => {
-            eprintln!("fmn: {error}");
+            if hook_command {
+                if let Ok(paths) = AppPaths::discover() {
+                    let _ = fmn::doctor::append_diagnostic(&paths, &error.to_string());
+                }
+            } else {
+                eprintln!("fmn: {error}");
+            }
             ExitCode::from(2)
         }
     }
@@ -117,6 +129,20 @@ fn run(cli: Cli) -> fmn::Result<ExitCode> {
     let mut store = Store::open(&paths.database)?;
 
     match cli.command {
+        Command::Doctor => {
+            let report = fmn::doctor::inspect(&paths, &store);
+            for check in &report.checks {
+                let status = match check.status {
+                    fmn::doctor::Status::Ok => "ok",
+                    fmn::doctor::Status::Warning => "warn",
+                    fmn::doctor::Status::Error => "error",
+                };
+                println!("[{status}] {}: {}", check.name, check.detail);
+            }
+            if !report.is_healthy() {
+                return Ok(ExitCode::from(2));
+            }
+        }
         Command::Init { .. } => unreachable!(),
         Command::Session => unreachable!(),
         Command::Search { query, cwd } => {
