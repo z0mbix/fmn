@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+use crate::import::ImportedRecord;
 use crate::model::{CommandSummary, Entry, SearchCandidate, Shell};
 use crate::{Error, Result};
 
@@ -278,6 +279,57 @@ impl Store {
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(Into::into)
     }
+
+    pub fn has_import_key(&self, import_key: &str) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM entries WHERE import_key = ?1)",
+                [import_key],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn import_record(
+        &mut self,
+        record: &ImportedRecord,
+        shell: Shell,
+        fallback_started_at: i64,
+    ) -> Result<bool> {
+        let transaction = self.connection.transaction()?;
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM entries WHERE import_key = ?1)",
+            [&record.import_key],
+            |row| row.get(0),
+        )?;
+        if exists {
+            transaction.rollback()?;
+            return Ok(false);
+        }
+
+        let started_at = record.started_at.unwrap_or(fallback_started_at);
+        let command_id = upsert_command(&transaction, &record.command, started_at)?;
+        let finished_at = record
+            .duration_ms
+            .and_then(|duration| started_at.checked_add(duration));
+        transaction.execute(
+            "INSERT INTO entries(
+                command_id, started_at, finished_at, duration_ms, cwd, shell,
+                session_id, source, import_key
+             ) VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, 'import', ?7)",
+            params![
+                command_id,
+                started_at,
+                finished_at,
+                record.duration_ms,
+                shell.as_str(),
+                format!("import:{}", shell.as_str()),
+                record.import_key,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
 }
 
 fn upsert_command(transaction: &Transaction<'_>, command: &str, at: i64) -> Result<i64> {
@@ -485,5 +537,25 @@ mod tests {
             store.entries_for_command(candidates[0].id).unwrap().len(),
             2
         );
+    }
+
+    #[test]
+    fn import_is_idempotent_and_preserves_duplicate_occurrences() {
+        let parsed = crate::import::parse(Shell::Bash, "echo same\necho same\n");
+        let mut store = Store::open_in_memory().unwrap();
+        for (index, record) in parsed.records.iter().enumerate() {
+            assert!(
+                store
+                    .import_record(record, Shell::Bash, index as i64)
+                    .unwrap()
+            );
+        }
+        for record in &parsed.records {
+            assert!(!store.import_record(record, Shell::Bash, 100).unwrap());
+            assert!(store.has_import_key(&record.import_key).unwrap());
+        }
+        assert_eq!(store.entries(10).unwrap().len(), 2);
+        assert_eq!(store.commands().unwrap()[0].use_count, 2);
+        assert_eq!(store.entries(1).unwrap()[0].source, "import");
     }
 }

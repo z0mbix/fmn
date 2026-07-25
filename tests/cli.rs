@@ -105,3 +105,54 @@ fn search_requires_an_interactive_terminal() {
             "search requires an interactive terminal",
         ));
 }
+
+#[test]
+fn import_dry_run_and_repeat_are_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let history = root.path().join("bash_history");
+    std::fs::write(&history, "#100\necho one\n#101\necho one\n").unwrap();
+
+    fmn(root.path())
+        .args([
+            "import",
+            "bash",
+            "--path",
+            history.to_str().unwrap(),
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("would_import=2"));
+    fmn(root.path())
+        .args(["import", "bash", "--path", history.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported=2"));
+    fmn(root.path())
+        .args(["import", "bash", "--path", history.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("duplicates=2"));
+    fmn(root.path())
+        .args(["history", "list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"source\": \"import\""));
+}
+
+#[test]
+fn import_applies_privacy_filters() {
+    let root = tempfile::tempdir().unwrap();
+    let history = root.path().join("fish_history");
+    std::fs::write(
+        &history,
+        "- cmd:  echo hidden\n  when: 100\n- cmd: echo visible\n  when: 101\n",
+    )
+    .unwrap();
+    fmn(root.path())
+        .args(["import", "fish", "--path", history.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported=1"))
+        .stdout(predicate::str::contains("ignored=1"));
+}

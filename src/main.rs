@@ -1,4 +1,5 @@
 use std::io::{IsTerminal, Read, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,15 @@ enum Command {
         query: String,
         #[arg(long)]
         cwd: Option<String>,
+    },
+    Import {
+        shell: Shell,
+        #[arg(long)]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        include_ignored: bool,
     },
     History {
         #[command(subcommand)]
@@ -119,6 +129,61 @@ fn run(cli: Cli) -> fmn::Result<ExitCode> {
             match fmn::tui::run(&mut store, query, cwd)? {
                 Some(command) => print!("{command}"),
                 None => return Ok(ExitCode::from(1)),
+            }
+        }
+        Command::Import {
+            shell,
+            path,
+            dry_run,
+            include_ignored,
+        } => {
+            let path = path
+                .or_else(|| fmn::import::default_history_path(shell))
+                .ok_or(fmn::Error::HomeDirectoryUnavailable)?;
+            let contents = std::fs::read_to_string(&path)?;
+            let parsed = fmn::import::parse(shell, &contents);
+            let filter = PrivacyFilter::new(&config.history)?;
+            let mut ignored = 0;
+            let mut duplicates = 0;
+            let mut imported = 0;
+            let fallback = now_millis();
+            for (index, record) in parsed.records.iter().enumerate() {
+                if !include_ignored && !filter.should_record(&record.command) {
+                    ignored += 1;
+                    continue;
+                }
+                if store.has_import_key(&record.import_key)? {
+                    duplicates += 1;
+                    continue;
+                }
+                if !dry_run
+                    && store.import_record(record, shell, fallback.saturating_add(index as i64))?
+                {
+                    imported += 1;
+                }
+            }
+            let would_import = parsed.records.len() - ignored - duplicates;
+            if dry_run {
+                println!(
+                    "parsed={} would_import={} duplicates={} ignored={} invalid={}",
+                    parsed.records.len(),
+                    would_import,
+                    duplicates,
+                    ignored,
+                    parsed.warnings.len()
+                );
+            } else {
+                println!(
+                    "parsed={} imported={} duplicates={} ignored={} invalid={}",
+                    parsed.records.len(),
+                    imported,
+                    duplicates,
+                    ignored,
+                    parsed.warnings.len()
+                );
+            }
+            for warning in parsed.warnings {
+                eprintln!("fmn import: warning: {warning}");
             }
         }
         Command::RecordStart(args) => {
