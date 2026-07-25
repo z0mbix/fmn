@@ -18,6 +18,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Init {
+        shell: Shell,
+    },
     History {
         #[command(subcommand)]
         command: HistoryCommand,
@@ -87,6 +90,10 @@ fn run(cli: Cli) -> fmn::Result<()> {
         println!("{}", uuid::Uuid::new_v4());
         return Ok(());
     }
+    if let Command::Init { shell } = cli.command {
+        print!("{}", fmn::shell::init_script(shell));
+        return Ok(());
+    }
 
     let paths = AppPaths::discover()?;
     paths.ensure_data_dir()?;
@@ -94,6 +101,7 @@ fn run(cli: Cli) -> fmn::Result<()> {
     let mut store = Store::open(&paths.database)?;
 
     match cli.command {
+        Command::Init { .. } => unreachable!(),
         Command::Session => unreachable!(),
         Command::RecordStart(args) => {
             let mut command = String::new();
