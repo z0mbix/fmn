@@ -1,15 +1,80 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fmt;
+use std::path::{Path, PathBuf};
 
+use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest, Sha256};
 
 use crate::model::Shell;
+use crate::{Error, Result};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ImportSource {
+    Fish,
+    Zsh,
+    Bash,
+    Atuin,
+}
+
+impl ImportSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fish => "fish",
+            Self::Zsh => "zsh",
+            Self::Bash => "bash",
+            Self::Atuin => "atuin",
+        }
+    }
+
+    pub const fn native_shell(self) -> Option<Shell> {
+        match self {
+            Self::Fish => Some(Shell::Fish),
+            Self::Zsh => Some(Shell::Zsh),
+            Self::Bash => Some(Shell::Bash),
+            Self::Atuin => None,
+        }
+    }
+}
+
+impl From<Shell> for ImportSource {
+    fn from(shell: Shell) -> Self {
+        match shell {
+            Shell::Fish => Self::Fish,
+            Shell::Zsh => Self::Zsh,
+            Shell::Bash => Self::Bash,
+        }
+    }
+}
+
+impl fmt::Display for ImportSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ImportSource {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "fish" => Ok(Self::Fish),
+            "zsh" => Ok(Self::Zsh),
+            "bash" => Ok(Self::Bash),
+            "atuin" => Ok(Self::Atuin),
+            other => Err(format!("unsupported import source {other:?}")),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedRecord {
     pub command: String,
     pub started_at: Option<i64>,
     pub duration_ms: Option<i64>,
+    pub exit_code: Option<i32>,
+    pub cwd: Option<String>,
+    pub shell: Option<String>,
+    pub session_id: Option<String>,
     pub import_key: String,
 }
 
@@ -28,17 +93,143 @@ pub fn parse(shell: Shell, input: &str) -> ParseResult {
     assign_keys(shell, raw)
 }
 
-pub fn default_history_path(shell: Shell) -> Option<PathBuf> {
+pub fn load(source: ImportSource, path: &Path) -> Result<ParseResult> {
+    match source.native_shell() {
+        Some(shell) => Ok(parse(shell, &std::fs::read_to_string(path)?)),
+        None => load_atuin(path),
+    }
+}
+
+pub fn default_history_path(source: impl Into<ImportSource>) -> Option<PathBuf> {
+    let source = source.into();
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    Some(match shell {
-        Shell::Bash => home.join(".bash_history"),
-        Shell::Zsh => home.join(".zsh_history"),
-        Shell::Fish => std::env::var_os("XDG_DATA_HOME")
+    Some(match source {
+        ImportSource::Bash => home.join(".bash_history"),
+        ImportSource::Zsh => home.join(".zsh_history"),
+        ImportSource::Fish => std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".local").join("share"))
             .join("fish")
             .join("fish_history"),
+        ImportSource::Atuin => std::env::var_os("ATUIN_DB_PATH")
+            .map(PathBuf::from)
+            .or_else(|| atuin_config_path(&home, "db_path"))
+            .unwrap_or_else(|| {
+                std::env::var_os("ATUIN_DATA_DIR")
+                    .map(PathBuf::from)
+                    .or_else(|| atuin_config_path(&home, "data_dir"))
+                    .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
+                    .unwrap_or_else(|| home.join(".local").join("share"))
+                    .join("atuin")
+                    .join("history.db")
+            }),
     })
+}
+
+fn atuin_config_path(home: &Path, key: &str) -> Option<PathBuf> {
+    let config_dir = std::env::var_os("ATUIN_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .map(|path| path.join("atuin"))
+        })
+        .unwrap_or_else(|| home.join(".config").join("atuin"));
+    let contents = std::fs::read_to_string(config_dir.join("config.toml")).ok()?;
+    let config = contents.parse::<toml::Table>().ok()?;
+    let value = config.get(key)?.as_str()?;
+    Some(expand_home(value, home))
+}
+
+fn expand_home(value: &str, home: &Path) -> PathBuf {
+    value
+        .strip_prefix("~/")
+        .map_or_else(|| PathBuf::from(value), |rest| home.join(rest))
+}
+
+fn load_atuin(path: &Path) -> Result<ParseResult> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let columns = table_columns(&connection)?;
+    for required in [
+        "id",
+        "timestamp",
+        "duration",
+        "exit",
+        "command",
+        "cwd",
+        "session",
+    ] {
+        if !columns.iter().any(|column| column == required) {
+            return Err(Error::UnsupportedAtuinDatabase(format!(
+                "history table is missing the {required:?} column"
+            )));
+        }
+    }
+
+    let shell_expression = if columns.iter().any(|column| column == "shell") {
+        "shell"
+    } else {
+        "NULL"
+    };
+    let active_filter = if columns.iter().any(|column| column == "deleted_at") {
+        "WHERE deleted_at IS NULL"
+    } else {
+        ""
+    };
+    let query = format!(
+        "SELECT id, timestamp, duration, exit, command, cwd, {shell_expression}, session
+         FROM history
+         {active_filter}
+         ORDER BY timestamp, id"
+    );
+    let mut statement = connection.prepare(&query)?;
+    let mut rows = statement.query([])?;
+    let mut result = ParseResult::default();
+
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let timestamp_ns: i64 = row.get(1)?;
+        let duration_ns: i64 = row.get(2)?;
+        let exit: i64 = row.get(3)?;
+        let shell = row
+            .get::<_, Option<String>>(6)?
+            .filter(|value| !value.trim().is_empty());
+        let exit_code = match i32::try_from(exit) {
+            Ok(exit_code) => Some(exit_code),
+            Err(_) => {
+                result
+                    .warnings
+                    .push(format!("Atuin record {id} has an out-of-range exit code"));
+                None
+            }
+        };
+        result.records.push(ImportedRecord {
+            command: row.get(4)?,
+            started_at: Some(timestamp_ns.div_euclid(1_000_000)),
+            duration_ms: (duration_ns >= 0).then(|| duration_ns.div_euclid(1_000_000)),
+            exit_code,
+            cwd: Some(row.get(5)?),
+            shell,
+            session_id: Some(format!("atuin:{}", row.get::<_, String>(7)?)),
+            import_key: atuin_import_key(&id),
+        });
+    }
+
+    Ok(result)
+}
+
+fn table_columns(connection: &Connection) -> Result<Vec<String>> {
+    let mut statement = connection.prepare("PRAGMA table_info(history)")?;
+    let rows = statement.query_map([], |row| row.get(1))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn atuin_import_key(id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"atuin\0");
+    hasher.update(id.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 #[derive(Debug)]
@@ -247,6 +438,10 @@ fn assign_keys(shell: Shell, raw: RawParseResult) -> ParseResult {
                 command: record.command,
                 started_at: record.started_at,
                 duration_ms: record.duration_ms,
+                exit_code: None,
+                cwd: None,
+                shell: None,
+                session_id: None,
                 import_key: format!("{:x}", hasher.finalize()),
             }
         })
@@ -259,7 +454,9 @@ fn assign_keys(shell: Shell, raw: RawParseResult) -> ParseResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_history_path, parse};
+    use rusqlite::Connection;
+
+    use super::{ImportSource, default_history_path, load, parse};
     use crate::model::Shell;
 
     #[test]
@@ -347,5 +544,124 @@ mod tests {
                 .unwrap()
                 .ends_with("fish/fish_history")
         );
+        assert!(
+            default_history_path(ImportSource::Atuin)
+                .unwrap()
+                .ends_with("atuin/history.db")
+        );
+    }
+
+    #[test]
+    fn import_source_round_trips() {
+        for source in [
+            ImportSource::Fish,
+            ImportSource::Zsh,
+            ImportSource::Bash,
+            ImportSource::Atuin,
+        ] {
+            assert_eq!(source.as_str().parse::<ImportSource>(), Ok(source));
+        }
+        assert!("sqlite".parse::<ImportSource>().is_err());
+    }
+
+    #[test]
+    fn loads_atuin_metadata_and_skips_deleted_records() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("history.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE history (
+                    id TEXT PRIMARY KEY,
+                    timestamp INTEGER NOT NULL,
+                    duration INTEGER NOT NULL,
+                    exit INTEGER NOT NULL,
+                    command TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    session TEXT NOT NULL,
+                    hostname TEXT NOT NULL,
+                    deleted_at INTEGER,
+                    shell TEXT
+                );
+                INSERT INTO history VALUES (
+                    'active', 1700000000123456789, 1250000000, 7,
+                    'cargo test', '/repo', 'session-one', 'host:user', NULL, 'fish'
+                );
+                INSERT INTO history VALUES (
+                    'deleted', 1700000001000000000, 1000000, 0,
+                    'secret old command', '/repo', 'session-two', 'host:user', 1, 'zsh'
+                );",
+            )
+            .unwrap();
+        drop(connection);
+
+        let parsed = load(ImportSource::Atuin, &path).unwrap();
+        assert!(parsed.warnings.is_empty());
+        assert_eq!(parsed.records.len(), 1);
+        let record = &parsed.records[0];
+        assert_eq!(record.command, "cargo test");
+        assert_eq!(record.started_at, Some(1_700_000_000_123));
+        assert_eq!(record.duration_ms, Some(1_250));
+        assert_eq!(record.exit_code, Some(7));
+        assert_eq!(record.cwd.as_deref(), Some("/repo"));
+        assert_eq!(record.shell.as_deref(), Some("fish"));
+        assert_eq!(record.session_id.as_deref(), Some("atuin:session-one"));
+    }
+
+    #[test]
+    fn loads_older_atuin_schema_and_unknown_duration() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("history.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE history (
+                    id TEXT PRIMARY KEY,
+                    timestamp INTEGER NOT NULL,
+                    duration INTEGER NOT NULL,
+                    exit INTEGER NOT NULL,
+                    command TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    session TEXT NOT NULL,
+                    hostname TEXT NOT NULL
+                );
+                INSERT INTO history VALUES (
+                    'old', 1700000000000000000, -1, 0,
+                    'echo old', '/', 'old-session', 'host:user'
+                );",
+            )
+            .unwrap();
+        drop(connection);
+
+        let parsed = load(ImportSource::Atuin, &path).unwrap();
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.records[0].duration_ms, None);
+        assert_eq!(parsed.records[0].shell, None);
+    }
+
+    #[test]
+    fn atuin_ids_produce_stable_distinct_import_keys() {
+        assert_eq!(
+            super::atuin_import_key("one"),
+            super::atuin_import_key("one")
+        );
+        assert_ne!(
+            super::atuin_import_key("one"),
+            super::atuin_import_key("two")
+        );
+    }
+
+    #[test]
+    fn rejects_sqlite_databases_without_atuin_history_schema() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("not-atuin.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE something_else (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        drop(connection);
+
+        let error = load(ImportSource::Atuin, &path).unwrap_err();
+        assert!(matches!(error, crate::Error::UnsupportedAtuinDatabase(_)));
     }
 }

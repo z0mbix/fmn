@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use rusqlite::Connection;
 
 fn fmn(data_dir: &std::path::Path) -> Command {
     let mut command = Command::cargo_bin("fmn").unwrap();
@@ -155,6 +156,70 @@ fn import_applies_privacy_filters() {
         .success()
         .stdout(predicate::str::contains("imported=1"))
         .stdout(predicate::str::contains("ignored=1"));
+}
+
+#[test]
+fn atuin_import_is_idempotent_and_preserves_metadata() {
+    let root = tempfile::tempdir().unwrap();
+    let history = root.path().join("atuin.db");
+    let connection = Connection::open(&history).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE history (
+                id TEXT PRIMARY KEY,
+                timestamp INTEGER NOT NULL,
+                duration INTEGER NOT NULL,
+                exit INTEGER NOT NULL,
+                command TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                session TEXT NOT NULL,
+                hostname TEXT NOT NULL,
+                deleted_at INTEGER,
+                shell TEXT
+            );
+            INSERT INTO history VALUES (
+                'atuin-entry', 1700000000123000000, 250000000, 3,
+                'cargo nextest run', '/code/fmn', 'atuin-session', 'host:user',
+                NULL, 'zsh'
+            );",
+        )
+        .unwrap();
+    drop(connection);
+
+    fmn(root.path())
+        .args([
+            "import",
+            "atuin",
+            "--path",
+            history.to_str().unwrap(),
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("would_import=1"));
+    fmn(root.path())
+        .args(["import", "atuin", "--path", history.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported=1"));
+    fmn(root.path())
+        .args(["import", "atuin", "--path", history.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("duplicates=1"));
+    fmn(root.path())
+        .args(["history", "list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"command\": \"cargo nextest run\"",
+        ))
+        .stdout(predicate::str::contains("\"started_at\": 1700000000123"))
+        .stdout(predicate::str::contains("\"duration_ms\": 250"))
+        .stdout(predicate::str::contains("\"exit_code\": 3"))
+        .stdout(predicate::str::contains("\"cwd\": \"/code/fmn\""))
+        .stdout(predicate::str::contains("\"shell\": \"zsh\""))
+        .stdout(predicate::str::contains("\"source\": \"import\""));
 }
 
 #[test]

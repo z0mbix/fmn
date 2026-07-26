@@ -17,7 +17,8 @@ database before testing pre-release upgrades.
 - fuzzy Ctrl-R search with global or current-directory scope
 - repeated-command aggregation while preserving individual occurrences
 - delete one occurrence, forget a command everywhere, or clear all history
-- idempotent import of native Fish, Zsh, and Bash history files
+- idempotent import of native Fish, Zsh, and Bash history files and Atuin's
+  local database
 - local SQLite storage with WAL, foreign keys, and private filesystem
   permissions
 - privacy filters for leading-space commands and ignored command globs
@@ -92,10 +93,17 @@ fmn import fish --dry-run
 fmn import fish
 fmn import zsh
 fmn import bash
+fmn import atuin --dry-run
+fmn import atuin
 ```
 
 Imports use stable source keys, so rerunning one does not duplicate existing
-occurrences. Use `--path FILE` for a non-default history file.
+occurrences. Atuin imports retain timestamps, durations, exit codes, working
+directories, and shell metadata when available, and skip soft-deleted entries.
+By default, `fmn import atuin` follows Atuin's configured `db_path`, data
+directory, and environment overrides, falling back to
+`${XDG_DATA_HOME:-~/.local/share}/atuin/history.db`. Use `--path FILE` for a
+non-default history file or Atuin database.
 
 ## Privacy and data
 

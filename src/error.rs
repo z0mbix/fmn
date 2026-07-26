@@ -22,6 +22,8 @@ pub enum Error {
     EntryNotFound(i64),
     #[error("command {0} does not exist")]
     CommandNotFound(i64),
+    #[error("unsupported Atuin database: {0}")]
+    UnsupportedAtuinDatabase(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

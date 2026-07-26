@@ -325,7 +325,7 @@ impl Store {
     pub fn import_record(
         &mut self,
         record: &ImportedRecord,
-        shell: Shell,
+        import_source: &str,
         fallback_started_at: i64,
     ) -> Result<bool> {
         let transaction = self.connection.transaction()?;
@@ -344,18 +344,26 @@ impl Store {
         let finished_at = record
             .duration_ms
             .and_then(|duration| started_at.checked_add(duration));
+        let shell = record.shell.as_deref().unwrap_or(import_source);
+        let cwd = record.cwd.as_deref().unwrap_or("");
+        let session_id = record
+            .session_id
+            .clone()
+            .unwrap_or_else(|| format!("import:{import_source}"));
         transaction.execute(
             "INSERT INTO entries(
-                command_id, started_at, finished_at, duration_ms, cwd, shell,
-                session_id, source, import_key
-             ) VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, 'import', ?7)",
+                command_id, started_at, finished_at, duration_ms, exit_code, cwd,
+                shell, session_id, source, import_key
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'import', ?9)",
             params![
                 command_id,
                 started_at,
                 finished_at,
                 record.duration_ms,
-                shell.as_str(),
-                format!("import:{}", shell.as_str()),
+                record.exit_code,
+                cwd,
+                shell,
+                session_id,
                 record.import_key,
             ],
         )?;
@@ -578,12 +586,16 @@ mod tests {
         for (index, record) in parsed.records.iter().enumerate() {
             assert!(
                 store
-                    .import_record(record, Shell::Bash, index as i64)
+                    .import_record(record, Shell::Bash.as_str(), index as i64)
                     .unwrap()
             );
         }
         for record in &parsed.records {
-            assert!(!store.import_record(record, Shell::Bash, 100).unwrap());
+            assert!(
+                !store
+                    .import_record(record, Shell::Bash.as_str(), 100)
+                    .unwrap()
+            );
             assert!(store.has_import_key(&record.import_key).unwrap());
         }
         assert_eq!(store.entries(10).unwrap().len(), 2);

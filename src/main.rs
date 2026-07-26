@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 use fmn::config::Config;
+use fmn::import::ImportSource;
 use fmn::model::Shell;
 use fmn::paths::AppPaths;
 use fmn::privacy::PrivacyFilter;
@@ -32,7 +33,8 @@ enum Command {
         shell_integration: bool,
     },
     Import {
-        shell: Shell,
+        /// History source to import
+        source: ImportSource,
         #[arg(long)]
         path: Option<PathBuf>,
         #[arg(long)]
@@ -175,16 +177,15 @@ fn run(cli: Cli) -> fmn::Result<ExitCode> {
             }
         }
         Command::Import {
-            shell,
+            source,
             path,
             dry_run,
             include_ignored,
         } => {
             let path = path
-                .or_else(|| fmn::import::default_history_path(shell))
+                .or_else(|| fmn::import::default_history_path(source))
                 .ok_or(fmn::Error::HomeDirectoryUnavailable)?;
-            let contents = std::fs::read_to_string(&path)?;
-            let parsed = fmn::import::parse(shell, &contents);
+            let parsed = fmn::import::load(source, &path)?;
             let filter = PrivacyFilter::new(&config.history)?;
             let mut ignored = 0;
             let mut duplicates = 0;
@@ -200,7 +201,11 @@ fn run(cli: Cli) -> fmn::Result<ExitCode> {
                     continue;
                 }
                 if !dry_run
-                    && store.import_record(record, shell, fallback.saturating_add(index as i64))?
+                    && store.import_record(
+                        record,
+                        source.as_str(),
+                        fallback.saturating_add(index as i64),
+                    )?
                 {
                     imported += 1;
                 }
