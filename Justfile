@@ -1,10 +1,18 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+default: help
+
+help:
+    just --list --list-prefix '  » '
+
 fmt:
     cargo fmt --all --check
 
 lint:
     cargo clippy --all-targets --all-features -- -D warnings
+
+build:
+    cargo build --locked --bin fmn
 
 test:
     cargo test --all-targets --all-features
@@ -24,7 +32,7 @@ stress:
     cargo test --test concurrency -- --nocapture
 
 fuzz target="import_parse":
-    cargo +nightly fuzz run {{target}}
+    cargo +nightly fuzz run {{ target }}
 
 mutants:
     cargo mutants --workspace

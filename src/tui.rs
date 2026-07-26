@@ -84,6 +84,10 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Intent {
+        if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+            return Intent::Cancel;
+        }
+
         match &mut self.view {
             View::Main => self.handle_main(key),
             View::Details => self.handle_details(key),
@@ -395,7 +399,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
             Span::styled("Ctrl-X", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" manage  "),
             Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" cancel"),
+            Span::raw("/Ctrl-C cancel"),
         ]),
         areas[2],
     );
@@ -563,6 +567,29 @@ mod tests {
     fn escape_cancels_from_main() {
         let mut app = App::new(vec![], String::new(), 1);
         assert_eq!(app.handle_key(key(KeyCode::Esc)), Intent::Cancel);
+    }
+
+    #[test]
+    fn ctrl_c_cancels_from_every_view() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let mut app = App::new(vec![candidate(1, "one", 1)], String::new(), 1);
+
+        assert_eq!(app.handle_key(ctrl_c), Intent::Cancel);
+
+        app.handle_key(key(KeyCode::F(1)));
+        assert_eq!(app.handle_key(ctrl_c), Intent::Cancel);
+
+        app.show_details(vec![]);
+        assert_eq!(app.handle_key(ctrl_c), Intent::Cancel);
+
+        app.view = View::Manage;
+        assert_eq!(app.handle_key(ctrl_c), Intent::Cancel);
+
+        app.view = View::Confirm {
+            mutation: Mutation::Clear,
+            input: String::new(),
+        };
+        assert_eq!(app.handle_key(ctrl_c), Intent::Cancel);
     }
 
     #[test]
