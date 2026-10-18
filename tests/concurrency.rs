@@ -64,6 +64,14 @@ fn imports_and_deletions_can_run_alongside_live_capture() {
     let store = Store::open(&database).unwrap();
     store.purge_deleted().unwrap();
     assert_eq!(store.entries(COUNT * 5).unwrap().len(), COUNT * 4);
+    let candidates = store.search_candidates("/").unwrap();
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.cwd_use_count)
+            .sum::<i64>(),
+        (COUNT * 3) as i64
+    );
     assert_eq!(store.integrity_check().unwrap(), "ok");
 }
 

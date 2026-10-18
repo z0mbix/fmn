@@ -7,7 +7,18 @@ use crate::import::ImportedRecord;
 use crate::model::{CommandSummary, Entry, SearchCandidate, Shell};
 use crate::{Error, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+
+const SEARCH_CANDIDATES_SQL: &str = "SELECT
+    c.id, c.command, c.first_seen_at, c.last_seen_at, c.use_count,
+    COALESCE(d.use_count, 0), d.last_seen_at, newest.cwd, newest.exit_code
+ FROM commands c
+ LEFT JOIN command_directories d ON d.command_id = c.id AND d.cwd = ?1
+ JOIN entries newest ON newest.id = (
+     SELECT id FROM entries WHERE command_id = c.id
+     ORDER BY started_at DESC, id DESC LIMIT 1
+ )
+ ORDER BY c.last_seen_at DESC, c.id DESC";
 
 const ENTRIES_SQL: &str = "SELECT e.id, e.command_id, c.command, e.started_at, e.finished_at,
                     e.duration_ms, e.exit_code, e.cwd, e.shell, e.session_id, e.source
@@ -61,6 +72,23 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at)
 VALUES (2, CAST(unixepoch('subsec') * 1000 AS INTEGER));
 "#;
 
+const SCHEMA_V3: &str = r#"
+CREATE TABLE command_directories (
+    command_id INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
+    cwd TEXT NOT NULL,
+    use_count INTEGER NOT NULL CHECK (use_count > 0),
+    last_seen_at INTEGER NOT NULL,
+    PRIMARY KEY (command_id, cwd)
+) WITHOUT ROWID;
+INSERT INTO command_directories(command_id, cwd, use_count, last_seen_at)
+    SELECT command_id, cwd, COUNT(*), MAX(started_at) FROM entries GROUP BY command_id, cwd;
+DROP INDEX entries_command_time;
+CREATE INDEX entries_command_time ON entries(command_id, started_at DESC, id DESC);
+CREATE INDEX commands_last_seen ON commands(last_seen_at DESC, id DESC);
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (3, CAST(unixepoch('subsec') * 1000 AS INTEGER));
+"#;
+
 #[derive(Debug)]
 pub struct Store {
     connection: Connection,
@@ -110,6 +138,7 @@ impl Store {
         if checked_schema_version(&transaction)? < CURRENT_SCHEMA_VERSION {
             transaction.execute_batch(SCHEMA)?;
             transaction.execute_batch(SCHEMA_V2)?;
+            transaction.execute_batch(SCHEMA_V3)?;
         }
         transaction.commit()?;
         Ok(())
@@ -142,6 +171,7 @@ impl Store {
             params![command_id, started_at, cwd, shell.as_str(), session_id],
         )?;
         let entry_id = transaction.last_insert_rowid();
+        upsert_directory(&transaction, command_id, cwd, started_at)?;
         transaction.commit()?;
         Ok(entry_id)
     }
@@ -204,30 +234,7 @@ impl Store {
     }
 
     pub fn search_candidates(&self, cwd: &str) -> Result<Vec<SearchCandidate>> {
-        let mut statement = self.connection.prepare(
-            "SELECT
-                c.id,
-                c.command,
-                c.first_seen_at,
-                c.last_seen_at,
-                c.use_count,
-                COALESCE(SUM(CASE WHEN e.cwd = ?1 THEN 1 ELSE 0 END), 0),
-                MAX(CASE WHEN e.cwd = ?1 THEN e.started_at END),
-                (
-                    SELECT newest.cwd FROM entries newest
-                    WHERE newest.command_id = c.id
-                    ORDER BY newest.started_at DESC, newest.id DESC LIMIT 1
-                ),
-                (
-                    SELECT newest.exit_code FROM entries newest
-                    WHERE newest.command_id = c.id
-                    ORDER BY newest.started_at DESC, newest.id DESC LIMIT 1
-                )
-             FROM commands c
-             JOIN entries e ON e.command_id = c.id
-             GROUP BY c.id
-             ORDER BY c.last_seen_at DESC, c.id DESC",
-        )?;
+        let mut statement = self.connection.prepare(SEARCH_CANDIDATES_SQL)?;
         let rows = statement.query_map([cwd], |row| {
             Ok(SearchCandidate {
                 id: row.get(0)?,
@@ -263,15 +270,25 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let command_id = transaction
+        let (command_id, cwd) = transaction
             .query_row(
-                "SELECT command_id FROM entries WHERE id = ?1",
+                "SELECT command_id, cwd FROM entries WHERE id = ?1",
                 [entry_id],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?
             .ok_or(Error::EntryNotFound(entry_id))?;
         transaction.execute("DELETE FROM entries WHERE id = ?1", [entry_id])?;
+        transaction.execute(
+            "DELETE FROM command_directories WHERE command_id = ?1 AND cwd = ?2",
+            params![command_id, cwd],
+        )?;
+        transaction.execute(
+            "INSERT INTO command_directories(command_id, cwd, use_count, last_seen_at)
+             SELECT command_id, cwd, COUNT(*), MAX(started_at) FROM entries
+             WHERE command_id = ?1 AND cwd = ?2 GROUP BY command_id, cwd",
+            params![command_id, cwd],
+        )?;
         refresh_or_delete_command(&transaction, command_id)?;
         transaction.commit()?;
         self.purge_deleted()
@@ -397,6 +414,7 @@ impl Store {
                 record.import_key,
             ],
         )?;
+        upsert_directory(&transaction, command_id, cwd, started_at)?;
         transaction.commit()?;
         Ok(true)
     }
@@ -442,6 +460,23 @@ fn upsert_command(transaction: &Transaction<'_>, command: &str, at: i64) -> Resu
             |row| row.get(0),
         )
         .map_err(Into::into)
+}
+
+fn upsert_directory(
+    transaction: &Transaction<'_>,
+    command_id: i64,
+    cwd: &str,
+    at: i64,
+) -> Result<()> {
+    transaction.execute(
+        "INSERT INTO command_directories(command_id, cwd, use_count, last_seen_at)
+         VALUES (?1, ?2, 1, ?3)
+         ON CONFLICT(command_id, cwd) DO UPDATE SET
+             use_count = use_count + 1,
+             last_seen_at = MAX(last_seen_at, excluded.last_seen_at)",
+        params![command_id, cwd, at],
+    )?;
+    Ok(())
 }
 
 fn refresh_or_delete_command(transaction: &Transaction<'_>, command_id: i64) -> Result<()> {
@@ -735,6 +770,110 @@ mod tests {
         assert_eq!(
             store.entries_for_command(candidates[0].id).unwrap().len(),
             2
+        );
+    }
+
+    fn assert_directory_cache(store: &Store) {
+        let read = |sql| {
+            store
+                .connection
+                .prepare(sql)
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            read(
+                "SELECT command_id, cwd, use_count, last_seen_at FROM command_directories ORDER BY command_id, cwd"
+            ),
+            read(
+                "SELECT command_id, cwd, COUNT(*), MAX(started_at) FROM entries GROUP BY command_id, cwd ORDER BY command_id, cwd"
+            )
+        );
+    }
+
+    #[test]
+    fn upgrades_directory_statistics_and_keeps_them_consistent() {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("history.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection.execute_batch(super::SCHEMA).unwrap();
+        connection.execute_batch(super::SCHEMA_V2).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO commands VALUES(1, 'echo old', 10, 20, 3);
+            INSERT INTO entries(command_id, started_at, cwd, shell, session_id) VALUES
+            (1, 10, '/a', 'bash', 's'), (1, 20, '/b', 'bash', 's'), (1, 20, '/a', 'bash', 's');",
+            )
+            .unwrap();
+        drop(connection);
+        let mut store = Store::open(&database).unwrap();
+        assert_directory_cache(&store);
+        assert_eq!(store.search_candidates("/a").unwrap()[0].cwd_use_count, 2);
+        assert_eq!(store.search_candidates("/a").unwrap()[0].latest_cwd, "/a");
+        let mut record = crate::import::parse(Shell::Bash, "echo old")
+            .records
+            .remove(0);
+        record.started_at = Some(5);
+        record.cwd = Some("/a".into());
+        assert!(store.import_record(&record, "bash", 0).unwrap());
+        assert!(!store.import_record(&record, "bash", 0).unwrap());
+        assert_directory_cache(&store);
+        store.delete_entry(3).unwrap();
+        let candidate = &store.search_candidates("/a").unwrap()[0];
+        assert_eq!(candidate.cwd_use_count, 2);
+        assert_eq!(candidate.cwd_last_seen_at, Some(10));
+        assert_eq!(candidate.latest_cwd, "/b");
+        assert_directory_cache(&store);
+        store.forget_command(1).unwrap();
+        assert_directory_cache(&store);
+        store
+            .record_start("new", 1, "/c", Shell::Fish, "live")
+            .unwrap();
+        assert_directory_cache(&store);
+        store.clear().unwrap();
+        assert_directory_cache(&store);
+    }
+
+    #[test]
+    fn candidate_search_uses_statistics_and_indexed_latest_entries() {
+        let store = Store::open_in_memory().unwrap();
+        let mut statement = store
+            .connection
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                super::SEARCH_CANDIDATES_SQL
+            ))
+            .unwrap();
+        let plan: Vec<String> = statement
+            .query_map(["/repo"], |row| row.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("SEARCH d USING PRIMARY KEY")),
+            "{plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("entries_command_time")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|step| step.contains("TEMP B-TREE") || step.contains("SCAN entries")),
+            "{plan:?}"
         );
     }
 

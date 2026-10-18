@@ -46,5 +46,38 @@ fn recording_benchmark(criterion: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, ranking_benchmark, recording_benchmark);
+fn disk_reads_benchmark(criterion: &mut Criterion) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("history.db");
+    Store::open(&path).unwrap();
+    let mut connection = rusqlite::Connection::open(&path).unwrap();
+    let transaction = connection.transaction().unwrap();
+    transaction
+        .execute_batch(
+            "WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<5000)
+         INSERT INTO commands SELECT n, 'git checkout feature-' || n, n, n+495000, 100 FROM seq;
+         WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<500000)
+         INSERT INTO entries(command_id, started_at, cwd, shell, session_id)
+         SELECT (n-1)%5000+1, n, '/repo', 'bash', 'bench' FROM seq;
+         INSERT INTO command_directories SELECT command_id, cwd, COUNT(*), MAX(started_at)
+         FROM entries GROUP BY command_id, cwd;",
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(connection);
+    let store = Store::open(&path).unwrap();
+    criterion.bench_function("disk_search_500k_occurrences", |bencher| {
+        bencher.iter(|| store.search_candidates("/repo").unwrap())
+    });
+    criterion.bench_function("disk_list_100_of_500k", |bencher| {
+        bencher.iter(|| store.entries(100).unwrap())
+    });
+}
+
+criterion_group!(
+    benches,
+    ranking_benchmark,
+    recording_benchmark,
+    disk_reads_benchmark
+);
 criterion_main!(benches);
