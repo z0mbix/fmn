@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::model::{Entry, SearchCandidate};
-use crate::search::{RankedCandidate, rank};
+use crate::search::{RankedMatch, Ranker};
 use crate::storage::Store;
 use crate::{Error, Result};
 
@@ -47,7 +47,8 @@ enum View {
 pub struct App {
     query: String,
     candidates: Vec<SearchCandidate>,
-    ranked: Vec<RankedCandidate>,
+    ranked: Vec<RankedMatch>,
+    ranker: Ranker,
     selected: usize,
     current_dir_only: bool,
     view: View,
@@ -58,11 +59,14 @@ pub struct App {
 
 impl App {
     pub fn new(candidates: Vec<SearchCandidate>, query: String, now_millis: i64) -> Self {
-        let ranked = rank(&candidates, &query, false, now_millis);
+        let mut ranker = Ranker::default();
+        let mut ranked = Vec::new();
+        ranker.rank_into(&candidates, &query, false, now_millis, &mut ranked);
         Self {
             query,
             candidates,
             ranked,
+            ranker,
             selected: 0,
             current_dir_only: false,
             view: View::Main,
@@ -243,7 +247,7 @@ impl App {
     fn selected_candidate(&self) -> Option<&SearchCandidate> {
         self.ranked
             .get(self.selected)
-            .map(|ranked| &ranked.candidate)
+            .map(|ranked| &self.candidates[ranked.index])
     }
 
     fn selected_detail(&self) -> Option<&Entry> {
@@ -255,11 +259,12 @@ impl App {
 
     fn refresh(&mut self) {
         self.details.clear();
-        self.ranked = rank(
+        self.ranker.rank_into(
             &self.candidates,
             &self.query,
             self.current_dir_only,
             self.now_millis,
+            &mut self.ranked,
         );
         self.selected = self.selected.min(self.ranked.len().saturating_sub(1));
     }
@@ -420,29 +425,32 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
 }
 
 fn draw_candidates(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, app: &App) {
-    let items: Vec<_> = app
-        .ranked
+    let visible = visible_range(
+        app.selected,
+        app.ranked.len(),
+        area.height.saturating_sub(2),
+    );
+    let items: Vec<_> = app.ranked[visible.clone()]
         .iter()
         .map(|ranked| {
-            let status = match ranked.candidate.latest_exit_code {
+            let candidate = &app.candidates[ranked.index];
+            let status = match candidate.latest_exit_code {
                 Some(0) => "✓",
                 Some(_) => "✗",
                 None => "·",
             };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{status} "), Style::default().fg(Color::DarkGray)),
-                Span::raw(ranked.candidate.command.replace('\n', " ↵ ")),
+                Span::raw(candidate.command.replace('\n', " ↵ ")),
                 Span::styled(
-                    format!(
-                        "  ×{}  {}",
-                        ranked.candidate.use_count, ranked.candidate.latest_cwd
-                    ),
+                    format!("  ×{}  {}", candidate.use_count, candidate.latest_cwd),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
         })
         .collect();
-    let mut state = ListState::default().with_selected((!items.is_empty()).then_some(app.selected));
+    let mut state = ListState::default()
+        .with_selected((!items.is_empty()).then_some(app.selected - visible.start));
     frame.render_stateful_widget(
         List::new(items)
             .block(
@@ -462,8 +470,12 @@ fn draw_candidates(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, 
 }
 
 fn draw_details(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, app: &App) {
-    let items: Vec<_> = app
-        .details
+    let visible = visible_range(
+        app.detail_selected,
+        app.details.len(),
+        area.height.saturating_sub(2),
+    );
+    let items: Vec<_> = app.details[visible.clone()]
         .iter()
         .map(|entry| {
             ListItem::new(format!(
@@ -477,8 +489,8 @@ fn draw_details(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, app
             ))
         })
         .collect();
-    let mut state =
-        ListState::default().with_selected((!items.is_empty()).then_some(app.detail_selected));
+    let mut state = ListState::default()
+        .with_selected((!items.is_empty()).then_some(app.detail_selected - visible.start));
     frame.render_stateful_widget(
         List::new(items)
             .block(
@@ -491,6 +503,13 @@ fn draw_details(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, app
         area,
         &mut state,
     );
+}
+
+fn visible_range(selected: usize, length: usize, height: u16) -> std::ops::Range<usize> {
+    let start = selected
+        .min(length.saturating_sub(1))
+        .saturating_sub(usize::from(height).saturating_sub(1));
+    start..length.min(start + usize::from(height))
 }
 
 fn draw_help(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect) {
@@ -615,7 +634,7 @@ mod tests {
         );
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.ranked.len(), 1);
-        assert_eq!(app.ranked[0].candidate.command, "local");
+        assert_eq!(app.selected_candidate().unwrap().command, "local");
     }
 
     #[test]
@@ -723,6 +742,33 @@ mod tests {
         let backend = TestBackend::new(20, 7);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &app)).unwrap();
+    }
+
+    #[test]
+    fn long_history_renders_and_accepts_the_selected_result() {
+        let candidates = (0..2000)
+            .map(|id| candidate(id, &format!("command-{id:04}"), 0))
+            .collect();
+        let mut app = App::new(candidates, String::new(), 1);
+        for _ in 0..1999 {
+            app.handle_key(key(KeyCode::Down));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("2000 matches"));
+        assert!(text.contains("command-1999"));
+        assert!(!text.contains("command-0000"));
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Intent::Accept("command-1999".into())
+        );
     }
 
     #[test]

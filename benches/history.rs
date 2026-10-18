@@ -27,6 +27,24 @@ fn ranking_benchmark(criterion: &mut Criterion) {
                 bencher.iter(|| search::rank(candidates, "gco fea", false, 100_000))
             },
         );
+        let mut ranker = search::Ranker::default();
+        let mut matches = Vec::new();
+        group.bench_with_input(
+            BenchmarkId::new("reused", size),
+            &candidates,
+            |bencher, candidates| {
+                bencher.iter(|| {
+                    ranker.rank_into(
+                        std::hint::black_box(candidates),
+                        "gco fea",
+                        false,
+                        100_000,
+                        &mut matches,
+                    );
+                    std::hint::black_box(&matches);
+                })
+            },
+        );
     }
     group.finish();
 }
