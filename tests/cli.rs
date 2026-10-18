@@ -58,6 +58,38 @@ fn record_and_list_json() {
 }
 
 #[test]
+fn plain_history_escapes_controls_without_changing_stored_commands() {
+    let root = tempfile::tempdir().unwrap();
+    let command = "echo café\x1b]52;c;Zm1u\x07\r\n\tend";
+    fmn(root.path())
+        .args([
+            "_record-start",
+            "--shell",
+            "bash",
+            "--session",
+            "s",
+            "--cwd",
+            "/",
+        ])
+        .write_stdin(command)
+        .assert()
+        .success();
+    let output = fmn(root.path()).args(["history", "list"]).output().unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("café"));
+    assert!(text.contains("\\u{1b}]52;c;Zm1u\\u{7}\\r\\n\\tend"));
+    assert!(!text.contains(['\x1b', '\x07', '\r']));
+    assert_eq!(text.lines().count(), 1);
+    let output = fmn(root.path())
+        .args(["history", "list", "--json"])
+        .output()
+        .unwrap();
+    let entries: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(entries[0]["command"].as_str(), Some(command));
+}
+
+#[test]
 fn privacy_filter_applies_to_cli_capture() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(

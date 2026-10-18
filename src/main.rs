@@ -292,7 +292,12 @@ fn run_history(command: HistoryCommand, store: &mut Store) -> fmn::Result<()> {
                 );
             } else {
                 for entry in entries {
-                    println!("{}\t{}\t{}", entry.id, entry.started_at, entry.command);
+                    println!(
+                        "{}\t{}\t{}",
+                        entry.id,
+                        entry.started_at,
+                        terminal_text(&entry.command)
+                    );
                 }
             }
         }
@@ -326,4 +331,16 @@ fn now_millis() -> i64 {
         .unwrap_or_default()
         .as_millis()
         .min(i64::MAX as u128) as i64
+}
+
+fn terminal_text(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character.is_control() {
+            output.extend(character.escape_default());
+        } else {
+            output.push(character);
+        }
+    }
+    output
 }
