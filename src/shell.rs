@@ -130,6 +130,7 @@ if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
 
     __fmn_precmd() {
         local __fmn_exit_code=$?
+        __fmn_prompt_exit_code=$__fmn_exit_code
         __fmn_in_hook=1
         if [[ $__fmn_ready -eq 1 && $__fmn_command_active -eq 1 && -n $FMN_SESSION_ID ]]; then
             command fmn _record-finish \
@@ -137,11 +138,16 @@ if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
                 >/dev/null 2>/dev/null || true
         fi
         __fmn_command_active=0
+        __fmn_ready=0
+        return "$__fmn_exit_code"
+    }
+
+    __fmn_prompt_end() {
         local HISTTIMEFORMAT=
         __fmn_last_history_line="$(builtin history 1)"
         __fmn_ready=1
         __fmn_in_hook=0
-        return "$__fmn_exit_code"
+        return "$__fmn_prompt_exit_code"
     }
 
     __fmn_search_widget() {
@@ -190,12 +196,15 @@ if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
     fi
     unset __fmn_debug_declaration
 
-    if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
-        PROMPT_COMMAND=(__fmn_precmd "${PROMPT_COMMAND[@]}")
+    if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]] &&
+        (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )); then
+        PROMPT_COMMAND=(__fmn_precmd "${PROMPT_COMMAND[@]}" __fmn_prompt_end)
     elif [[ -n ${PROMPT_COMMAND-} ]]; then
-        PROMPT_COMMAND="__fmn_precmd; $PROMPT_COMMAND"
+        PROMPT_COMMAND="__fmn_precmd
+$PROMPT_COMMAND
+__fmn_prompt_end"
     else
-        PROMPT_COMMAND=__fmn_precmd
+        PROMPT_COMMAND='__fmn_precmd; __fmn_prompt_end'
     fi
     if (( BASH_VERSINFO[0] < 4 )); then
         bind -m emacs-standard -x '"\C-x\C-r":__fmn_search_widget'

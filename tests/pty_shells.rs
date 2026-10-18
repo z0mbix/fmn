@@ -161,7 +161,7 @@ proc prompt {} {
         eof {exit 4}
     }
 }
-spawn -noecho bash --noprofile --rcfile [lindex $argv 0] -i
+spawn -noecho $env(FMN_TEST_BASH) --noprofile --rcfile [lindex $argv 0] -i
 prompt
 foreach command [lrange $argv 1 end] {
     send -- "$command\r"
@@ -185,6 +185,10 @@ expect eof
             ),
         )
         .env("HISTFILE", root.path().join("bash_history"))
+        .env(
+            "FMN_TEST_BASH",
+            std::env::var("FMN_TEST_BASH").unwrap_or_else(|_| "bash".into()),
+        )
         .env("INPUTRC", "/dev/null")
         .env("FMN_DATA_DIR", &data)
         .env("FMN_CONFIG", config_path)
@@ -239,6 +243,37 @@ fn bash_capture_retains_leading_space_when_explicitly_enabled() {
         &[" echo visible"],
     );
     assert!(entries.iter().any(|entry| entry.command == " echo visible"));
+}
+
+#[test]
+fn bash_prompt_handlers_do_not_become_history_entries() {
+    for setup in [
+        "PROMPT_COMMAND='printf prompt-hook;'",
+        "PROMPT_COMMAND=('printf first-hook' 'printf second-hook')",
+        "PROMPT_COMMAND='printf prompt-hook'; trap ':' DEBUG",
+    ] {
+        let entries = bash_entries(setup, "", &["false", "echo visible", "false"]);
+        let failures: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.command == "false")
+            .collect();
+        assert_eq!(failures.len(), 2, "{setup}: {entries:?}");
+        assert!(
+            failures.iter().all(|entry| entry.exit_code == Some(1)),
+            "{setup}: {entries:?}"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.command == "echo visible")
+                .count(),
+            1
+        );
+        assert!(
+            !entries.iter().any(|entry| entry.command.contains("hook")),
+            "{setup}: {entries:?}"
+        );
+    }
 }
 
 #[test]
