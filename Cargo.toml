@@ -17,7 +17,8 @@ crossterm = "0.29"
 globset = "0.4"
 nucleo-matcher = "0.3.1"
 ratatui = "0.30"
-rusqlite = { version = "0.40", features = ["bundled"] }
+# rusqlite 0.40 requires Rust 1.95's cfg_select! macro.
+rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
