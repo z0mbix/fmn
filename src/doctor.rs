@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::Result;
 use crate::paths::AppPaths;
-use crate::storage::Store;
+use crate::storage::{CURRENT_SCHEMA_VERSION, Store};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -43,7 +43,9 @@ pub fn inspect(paths: &AppPaths, store: &Store) -> Report {
         Err(failure) => error("database integrity", failure.to_string()),
     });
     checks.push(match store.schema_version() {
-        Ok(1) => ok("schema version", "1"),
+        Ok(version) if version == CURRENT_SCHEMA_VERSION => {
+            ok("schema version", version.to_string())
+        }
         Ok(version) => error("schema version", format!("unsupported version {version}")),
         Err(failure) => error("schema version", failure.to_string()),
     });

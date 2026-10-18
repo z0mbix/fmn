@@ -7,6 +7,15 @@ use crate::import::ImportedRecord;
 use crate::model::{CommandSummary, Entry, SearchCandidate, Shell};
 use crate::{Error, Result};
 
+pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+
+const ENTRIES_SQL: &str = "SELECT e.id, e.command_id, c.command, e.started_at, e.finished_at,
+                    e.duration_ms, e.exit_code, e.cwd, e.shell, e.session_id, e.source
+             FROM entries e
+             JOIN commands c ON c.id = e.command_id
+             ORDER BY e.started_at DESC, e.id DESC
+             LIMIT ?1";
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -44,6 +53,12 @@ CREATE INDEX IF NOT EXISTS entries_cwd_command_time
 
 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
 VALUES (1, unixepoch('subsec') * 1000);
+"#;
+
+const SCHEMA_V2: &str = r#"
+CREATE INDEX IF NOT EXISTS entries_time ON entries(started_at DESC, id DESC);
+INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+VALUES (2, CAST(unixepoch('subsec') * 1000 AS INTEGER));
 "#;
 
 #[derive(Debug)]
@@ -94,12 +109,15 @@ impl Store {
         )?;
         if migrations_exist {
             let version = self.schema_version()?;
-            if version >= 1 {
+            if version >= CURRENT_SCHEMA_VERSION {
                 return Ok(());
             }
         }
-        let transaction = self.connection.transaction()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(SCHEMA)?;
+        transaction.execute_batch(SCHEMA_V2)?;
         transaction.commit()?;
         Ok(())
     }
@@ -167,14 +185,7 @@ impl Store {
     }
 
     pub fn entries(&self, limit: usize) -> Result<Vec<Entry>> {
-        let mut statement = self.connection.prepare(
-            "SELECT e.id, e.command_id, c.command, e.started_at, e.finished_at,
-                    e.duration_ms, e.exit_code, e.cwd, e.shell, e.session_id, e.source
-             FROM entries e
-             JOIN commands c ON c.id = e.command_id
-             ORDER BY e.started_at DESC, e.id DESC
-             LIMIT ?1",
-        )?;
+        let mut statement = self.connection.prepare(ENTRIES_SQL)?;
         let rows = statement.query_map([limit as i64], map_entry)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
@@ -473,7 +484,10 @@ mod tests {
     #[test]
     fn migrates_fresh_database() {
         let store = Store::open_in_memory().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(
+            store.schema_version().unwrap(),
+            super::CURRENT_SCHEMA_VERSION
+        );
         assert_eq!(store.integrity_check().unwrap(), "ok");
     }
 
@@ -488,6 +502,45 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].duration_ms, Some(25));
         assert_eq!(entries[0].exit_code, Some(7));
+    }
+
+    #[test]
+    fn upgrades_v1_and_lists_recent_entries_without_a_sort() {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("history.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection.execute_batch(super::SCHEMA).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO commands VALUES(1, 'echo old', 1, 2, 2);
+            INSERT INTO entries(command_id, started_at, cwd, shell, session_id) VALUES
+                (1, 1, '/', 'bash', 's'), (1, 2, '/', 'bash', 's');",
+            )
+            .unwrap();
+        drop(connection);
+        let store = Store::open(&database).unwrap();
+        assert_eq!(
+            store.schema_version().unwrap(),
+            super::CURRENT_SCHEMA_VERSION
+        );
+        assert_eq!(store.entries(1).unwrap()[0].started_at, 2);
+        let mut statement = store
+            .connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", super::ENTRIES_SQL))
+            .unwrap();
+        let plan: Vec<String> = statement
+            .query_map([100], |row| row.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("entries_time")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
     }
 
     #[test]
