@@ -210,10 +210,13 @@ __fmn_prompt_end"
         bind -m emacs-standard -x '"\C-x\C-r":__fmn_search_widget'
         bind -m emacs-standard '"\C-x\C-g":""'
         bind -m emacs-standard '"\C-r":"\C-x\C-r\C-x\C-g"'
+        bind -m vi-insert '"\C-x\C-]":emacs-editing-mode'
+        bind -m emacs-standard '"\C-x\C-]":vi-editing-mode'
+        bind -m vi-insert '"\C-r":"\C-x\C-]\C-r\C-x\C-]"'
     else
         bind -x '"\C-r":__fmn_search_widget'
+        bind -m vi-insert -x '"\C-r":__fmn_search_widget'
     fi
-    bind -m vi-insertion -x '"\C-r":__fmn_search_widget'
 fi
 "#;
 

@@ -70,7 +70,7 @@ fn assert_captured(data_dir: &Path, shell: &str) {
 fn run_ctrl_r_expect(command: &[&str], data_dir: &Path, extra_env: &[(&str, &Path)]) {
     let script = r#"
 set timeout 10
-log_user 0
+log_user 1
 proc prompt {} {
     expect {
         -exact "FMN> " {}
@@ -86,16 +86,16 @@ send -- "$line\r"
 prompt
 set initial [file size $marker]
 send -- "\022"
-after 500
+expect -exact "\033\[?25l"
 send -- "\r"
+expect -exact "\033\[?1049l"
+expect -exact $line
+# Readline restores its terminal modes after redisplaying the inserted line.
 after 200
 if {[file size $marker] != $initial} {exit 5}
 send -- "\r"
-for {set attempt 0} {$attempt < 100 && [file size $marker] != 2 * $initial} {incr attempt} {
-    after 50
-}
-if {[file size $marker] != 2 * $initial} {exit 6}
 prompt
+if {[file size $marker] != 2 * $initial} {exit 6}
 send -- "exit\r"
 expect eof
 "#;
@@ -434,5 +434,99 @@ fn bash_ctrl_r_inserts_without_executing_until_enter() {
         ],
         &root.path().join("data"),
         &[],
+    );
+}
+
+#[test]
+fn bash_vi_ctrl_r_inserts_without_executing_until_enter() {
+    let root = tempfile::tempdir().unwrap();
+    let rc = root.path().join("bashrc");
+    std::fs::write(&rc, "PS1='FMN> '\nset -o vi\neval \"$(fmn init bash)\"\n").unwrap();
+    run_ctrl_r_expect(
+        &[
+            "bash",
+            "--noprofile",
+            "--rcfile",
+            rc.to_str().unwrap(),
+            "-i",
+        ],
+        &root.path().join("data"),
+        &[],
+    );
+}
+
+#[test]
+fn bash_multiline_selection_cannot_execute_before_enter() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let command =
+        "echo first >> \"$FMN_DATA_DIR/multiline\"\necho second >> \"$FMN_DATA_DIR/multiline\"";
+    let mut store = Store::open(&data.join("history.db")).unwrap();
+    store
+        .record_start(command, 1, "/", fmn::model::Shell::Bash, "seed")
+        .unwrap();
+    store.record_finish("seed", 2, 0).unwrap();
+    drop(store);
+    let rc = root.path().join("bashrc");
+    std::fs::write(&rc, "PS1='FMN> '\neval \"$(fmn init bash)\"\n").unwrap();
+    let script = r#"
+set timeout 10
+log_user 1
+proc prompt {} {
+    expect {
+        -exact "FMN> " {}
+        timeout {exit 3}
+        eof {exit 4}
+    }
+}
+spawn -noecho $env(FMN_TEST_BASH) --noprofile --rcfile [lindex $argv 0] -i
+prompt
+send -- "\022"
+expect -exact "\033\[?25l"
+send -- "\r"
+expect -exact "\033\[?1049l"
+expect -exact {echo first >> "$FMN_DATA_DIR/multiline"}
+expect -exact {echo second >> "$FMN_DATA_DIR/multiline"}
+after 200
+set marker [file join $env(FMN_DATA_DIR) multiline]
+if {[file exists $marker]} {exit 5}
+send -- "\r"
+prompt
+if {![file exists $marker]} {exit 6}
+send -- "exit\r"
+expect eof
+"#;
+    let mut driver = tempfile::NamedTempFile::new().unwrap();
+    driver.write_all(script.as_bytes()).unwrap();
+    let output = Command::new("expect")
+        .arg(driver.path())
+        .arg(&rc)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                binary_dir().display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .env(
+            "FMN_TEST_BASH",
+            std::env::var("FMN_TEST_BASH").unwrap_or_else(|_| "bash".into()),
+        )
+        .env("HISTFILE", root.path().join("bash_history"))
+        .env("FMN_DATA_DIR", &data)
+        .env("FMN_CONFIG", root.path().join("config.toml"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        std::fs::read_to_string(data.join("multiline")).unwrap(),
+        "first\nsecond\n"
     );
 }
