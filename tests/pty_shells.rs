@@ -68,20 +68,30 @@ fn assert_captured(data_dir: &Path, shell: &str) {
 
 fn run_ctrl_r_expect(command: &[&str], data_dir: &Path, extra_env: &[(&str, &Path)]) {
     let script = r#"
-set timeout 5
+set timeout 10
 log_user 0
+proc prompt {} {
+    expect {
+        -exact "FMN> " {}
+        timeout {exit 3}
+        eof {exit 4}
+    }
+}
 spawn -noecho {*}$argv
-expect "FMN> "
-send -- "echo ctrl-r-found\r"
-expect "ctrl-r-found"
-expect "FMN> "
+prompt
+set line {echo ctrl-r-found >> "$FMN_DATA_DIR/executions"}
+set marker [file join $env(FMN_DATA_DIR) executions]
+send -- "$line\r"
+prompt
+set initial [file size $marker]
 send -- "\022"
 after 500
 send -- "\r"
 after 200
+if {[file size $marker] != $initial} {exit 5}
 send -- "\r"
-expect "ctrl-r-found"
-expect "FMN> "
+prompt
+if {[file size $marker] != 2 * $initial} {exit 6}
 send -- "exit\r"
 expect eof
 "#;
@@ -114,7 +124,7 @@ expect eof
         .entries(20)
         .unwrap()
         .into_iter()
-        .filter(|entry| entry.command == "echo ctrl-r-found")
+        .filter(|entry| entry.command == r#"echo ctrl-r-found >> "$FMN_DATA_DIR/executions""#)
         .count();
     assert_eq!(
         count,

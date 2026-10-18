@@ -139,11 +139,31 @@ if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
 
     __fmn_search_widget() {
         local __fmn_result
+        if (( BASH_VERSINFO[0] < 4 )); then
+            bind -m emacs-standard '"\C-x\C-g":""'
+        fi
         __fmn_result="$(command fmn search --query "$READLINE_LINE" --cwd "$PWD")"
         local __fmn_search_status=$?
         if [[ $__fmn_search_status -eq 0 ]]; then
-            READLINE_LINE="$__fmn_result"
-            READLINE_POINT=${#READLINE_LINE}
+            if (( BASH_VERSINFO[0] >= 4 )); then
+                READLINE_LINE="$__fmn_result"
+                READLINE_POINT=${#READLINE_LINE}
+            else
+                # Bash 3 has no writable READLINE_LINE. Queue a literal-input
+                # macro after this widget, quoting control bytes so selection
+                # never accepts a line or invokes another Readline binding.
+                local LC_ALL=C
+                local __fmn_macro='\C-e\C-u' __fmn_byte __fmn_octal __fmn_index
+                for ((__fmn_index=0; __fmn_index<${#__fmn_result}; __fmn_index++)); do
+                    printf -v __fmn_byte '%d' "'${__fmn_result:__fmn_index:1}"
+                    printf -v __fmn_octal '\\%03o' "$__fmn_byte"
+                    if (( __fmn_byte < 32 || __fmn_byte == 127 )); then
+                        __fmn_macro+='\C-v'
+                    fi
+                    __fmn_macro+="$__fmn_octal"
+                done
+                bind -m emacs-standard '"\C-x\C-g":"'"$__fmn_macro"'"'
+            fi
         fi
     }
 
@@ -170,7 +190,13 @@ if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
     else
         PROMPT_COMMAND=__fmn_precmd
     fi
-    bind -x '"\C-r":__fmn_search_widget'
+    if (( BASH_VERSINFO[0] < 4 )); then
+        bind -m emacs-standard -x '"\C-x\C-r":__fmn_search_widget'
+        bind -m emacs-standard '"\C-x\C-g":""'
+        bind -m emacs-standard '"\C-r":"\C-x\C-r\C-x\C-g"'
+    else
+        bind -x '"\C-r":__fmn_search_widget'
+    fi
     bind -m vi-insertion -x '"\C-r":__fmn_search_widget'
 fi
 "#;
