@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::import::ImportedRecord;
 use crate::model::{CommandSummary, Entry, SearchCandidate, Shell};
@@ -256,7 +256,9 @@ impl Store {
     }
 
     pub fn delete_entry(&mut self, entry_id: i64) -> Result<()> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let command_id = transaction
             .query_row(
                 "SELECT command_id FROM entries WHERE id = ?1",
@@ -328,7 +330,11 @@ impl Store {
         import_source: &str,
         fallback_started_at: i64,
     ) -> Result<bool> {
-        let transaction = self.connection.transaction()?;
+        // Acquire the writer lock before reading so busy_timeout can retry the
+        // lock instead of encountering an un-upgradeable WAL read snapshot.
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let exists: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM entries WHERE import_key = ?1)",
             [&record.import_key],

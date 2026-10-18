@@ -5,6 +5,65 @@ use fmn::model::Shell;
 use fmn::storage::Store;
 
 #[test]
+fn imports_and_deletions_can_run_alongside_live_capture() {
+    const COUNT: usize = 100;
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("history.db");
+    let mut seed = Store::open(&database).unwrap();
+    let deletions: Vec<_> = (0..COUNT)
+        .map(|i| {
+            seed.record_start(&format!("seed-{i}"), i as i64, "/", Shell::Bash, "seed")
+                .unwrap()
+        })
+        .collect();
+    drop(seed);
+    let barrier = Arc::new(Barrier::new(5));
+    let handles: Vec<_> = (0..5)
+        .map(|worker| {
+            let database = database.clone();
+            let barrier = Arc::clone(&barrier);
+            let deletions = deletions.clone();
+            thread::spawn(move || {
+                let mut store = Store::open(&database).unwrap();
+                barrier.wait();
+                for (i, entry_id) in deletions.into_iter().enumerate() {
+                    match worker {
+                        0 => {
+                            let parsed = fmn::import::parse(Shell::Bash, &format!("import-{i}"));
+                            assert!(
+                                store
+                                    .import_record(&parsed.records[0], "bash", i as i64)
+                                    .unwrap()
+                            );
+                        }
+                        1 => store.delete_entry(entry_id).unwrap(),
+                        _ => {
+                            let session = format!("live-{worker}");
+                            store
+                                .record_start(
+                                    &format!("live-{worker}-{i}"),
+                                    i as i64,
+                                    "/",
+                                    Shell::Zsh,
+                                    &session,
+                                )
+                                .unwrap();
+                            store.record_finish(&session, i as i64 + 1, 0).unwrap();
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    let store = Store::open(&database).unwrap();
+    assert_eq!(store.entries(COUNT * 5).unwrap().len(), COUNT * 4);
+    assert_eq!(store.integrity_check().unwrap(), "ok");
+}
+
+#[test]
 fn concurrent_terminal_writers_do_not_lose_entries() {
     const WRITERS: usize = 8;
     const ENTRIES_PER_WRITER: usize = 40;
