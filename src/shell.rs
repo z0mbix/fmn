@@ -100,19 +100,24 @@ if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
     __fmn_ready=0
     __fmn_command_active=0
     __fmn_in_hook=0
+    __fmn_last_history_line=
 
     __fmn_preexec() {
         [[ $__fmn_in_hook -eq 0 && $__fmn_ready -eq 1 && $__fmn_command_active -eq 0 ]] || return 0
         __fmn_in_hook=1
         local __fmn_history_line
         local __fmn_command_text
+        local __fmn_history_pattern='^[[:space:]]*([0-9]+)[* ] (.*)$'
         local HISTTIMEFORMAT=
         __fmn_history_line="$(builtin history 1)"
-        if [[ $__fmn_history_line =~ ^[[:space:]]*[0-9]+[[:space:]]+(.*)$ ]]; then
-            __fmn_command_text="${BASH_REMATCH[1]}"
-        else
-            __fmn_command_text="$BASH_COMMAND"
+        # An unchanged entry means Bash omitted this command from its history.
+        # Consume only the history number's two-character separator, preserving
+        # leading whitespace for fmn's privacy filter.
+        if [[ $__fmn_history_line == "$__fmn_last_history_line" || ! $__fmn_history_line =~ $__fmn_history_pattern ]]; then
+            __fmn_in_hook=0
+            return 0
         fi
+        __fmn_command_text="${BASH_REMATCH[2]}"
         __fmn_command_active=1
         if [[ -n $FMN_SESSION_ID ]]; then
             printf %s "$__fmn_command_text" | command fmn _record-start \
@@ -132,6 +137,8 @@ if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
                 >/dev/null 2>/dev/null || true
         fi
         __fmn_command_active=0
+        local HISTTIMEFORMAT=
+        __fmn_last_history_line="$(builtin history 1)"
         __fmn_ready=1
         __fmn_in_hook=0
         return "$__fmn_exit_code"

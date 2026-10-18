@@ -125,6 +125,8 @@ ignore_patterns = ["password *", "secret-tool *"]
 
 Filters apply to live capture and imports. History remains entirely local;
 `fmn` has no network code or telemetry.
+Commands excluded from Bash's native history by `HISTCONTROL`, `HISTIGNORE`,
+or disabled history are also excluded from fmn capture.
 
 ## Reliability
 

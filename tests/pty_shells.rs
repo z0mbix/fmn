@@ -36,6 +36,7 @@ expect eof
     );
     expect
         .env("PATH", path)
+        .env("HISTFILE", data_dir.with_extension("shell-history"))
         .env("FMN_DATA_DIR", data_dir)
         .env("FMN_CONFIG", data_dir.join("config.toml"));
     for (name, value) in extra_env {
@@ -90,8 +91,11 @@ send -- "\r"
 after 200
 if {[file size $marker] != $initial} {exit 5}
 send -- "\r"
-prompt
+for {set attempt 0} {$attempt < 100 && [file size $marker] != 2 * $initial} {incr attempt} {
+    after 50
+}
 if {[file size $marker] != 2 * $initial} {exit 6}
+prompt
 send -- "exit\r"
 expect eof
 "#;
@@ -106,6 +110,7 @@ expect eof
     expect.arg(script_file.path()).args(command);
     expect
         .env("PATH", path)
+        .env("HISTFILE", data_dir.with_extension("shell-history"))
         .env("FMN_DATA_DIR", data_dir)
         .env("FMN_CONFIG", data_dir.join("config.toml"));
     for (name, value) in extra_env {
@@ -114,7 +119,8 @@ expect eof
     let output = expect.output().unwrap();
     assert!(
         output.status.success(),
-        "Ctrl-R PTY flow failed for {command:?}:\nstdout={}\nstderr={}",
+        "Ctrl-R PTY flow failed for {command:?} ({}):\nstdout={}\nstderr={}",
+        output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -132,6 +138,107 @@ expect eof
         "selection must wait for the second Enter\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
+}
+
+fn bash_entries(setup: &str, config: &str, commands: &[&str]) -> Vec<fmn::model::Entry> {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let rc = root.path().join("bashrc");
+    std::fs::write(
+        &rc,
+        format!("PS1='FMN> '\nHISTCONTROL=\nHISTIGNORE=\n{setup}\neval \"$(fmn init bash)\"\n"),
+    )
+    .unwrap();
+    let config_path = root.path().join("config.toml");
+    std::fs::write(&config_path, config).unwrap();
+    let script = r#"
+set timeout 10
+log_user 0
+proc prompt {} {
+    expect {
+        -exact "FMN> " {}
+        timeout {exit 3}
+        eof {exit 4}
+    }
+}
+spawn -noecho bash --noprofile --rcfile [lindex $argv 0] -i
+prompt
+foreach command [lrange $argv 1 end] {
+    send -- "$command\r"
+    prompt
+}
+send -- "exit\r"
+expect eof
+"#;
+    let mut driver = tempfile::NamedTempFile::new().unwrap();
+    driver.write_all(script.as_bytes()).unwrap();
+    let output = Command::new("expect")
+        .arg(driver.path())
+        .arg(&rc)
+        .args(commands)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                binary_dir().display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .env("HISTFILE", root.path().join("bash_history"))
+        .env("INPUTRC", "/dev/null")
+        .env("FMN_DATA_DIR", &data)
+        .env("FMN_CONFIG", config_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Bash PTY failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Store::open(&data.join("history.db"))
+        .unwrap()
+        .entries(100)
+        .unwrap()
+}
+
+#[test]
+fn bash_capture_preserves_leading_space_and_skips_omitted_history() {
+    for setup in ["", "HISTCONTROL=ignorespace", "HISTIGNORE='*private*'"] {
+        let entries = bash_entries(setup, "", &["echo visible", " echo private", "echo after"]);
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.command.contains("private")),
+            "{setup}"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.command == "echo visible")
+                .count(),
+            1,
+            "{setup}"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.command == "echo after")
+                .count(),
+            1,
+            "{setup}"
+        );
+    }
+}
+
+#[test]
+fn bash_capture_retains_leading_space_when_explicitly_enabled() {
+    let entries = bash_entries(
+        "",
+        "[history]\nignore_leading_space = false\n",
+        &[" echo visible"],
+    );
+    assert!(entries.iter().any(|entry| entry.command == " echo visible"));
 }
 
 #[test]
