@@ -293,6 +293,50 @@ fn atuin_import_is_idempotent_and_preserves_metadata() {
 }
 
 #[test]
+fn atuin_import_resolves_custom_data_directories_and_xdg_fallback() {
+    for source in ["config", "environment", "xdg"] {
+        let root = tempfile::tempdir().unwrap();
+        let custom = root.path().join("custom");
+        let config_dir = root.path().join("atuin-config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let directory = if source == "xdg" {
+            custom.join("atuin")
+        } else {
+            custom.clone()
+        };
+        std::fs::create_dir_all(&directory).unwrap();
+        let connection = Connection::open(directory.join("history.db")).unwrap();
+        connection.execute_batch("CREATE TABLE history (id TEXT, timestamp INTEGER, duration INTEGER, exit INTEGER, command TEXT, cwd TEXT, session TEXT);").unwrap();
+        drop(connection);
+        let mut command = fmn(root.path());
+        command
+            .env("HOME", root.path())
+            .env("ATUIN_CONFIG_DIR", &config_dir)
+            .env_remove("ATUIN_DB_PATH")
+            .env_remove("ATUIN_DATA_DIR")
+            .env_remove("XDG_DATA_HOME");
+        match source {
+            "config" => std::fs::write(
+                config_dir.join("config.toml"),
+                format!("data_dir = {:?}\n", custom.to_str().unwrap()),
+            )
+            .unwrap(),
+            "environment" => {
+                command.env("ATUIN_DATA_DIR", &custom);
+            }
+            _ => {
+                command.env("XDG_DATA_HOME", &custom);
+            }
+        }
+        command
+            .args(["import", "atuin", "--dry-run"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("parsed=0"));
+    }
+}
+
+#[test]
 fn doctor_reports_database_health() {
     let root = tempfile::tempdir().unwrap();
     fmn(root.path())

@@ -118,9 +118,12 @@ pub fn default_history_path(source: impl Into<ImportSource>) -> Option<PathBuf> 
                 std::env::var_os("ATUIN_DATA_DIR")
                     .map(PathBuf::from)
                     .or_else(|| atuin_config_path(&home, "data_dir"))
-                    .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
-                    .unwrap_or_else(|| home.join(".local").join("share"))
-                    .join("atuin")
+                    .unwrap_or_else(|| {
+                        std::env::var_os("XDG_DATA_HOME")
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| home.join(".local").join("share"))
+                            .join("atuin")
+                    })
                     .join("history.db")
             }),
     })
