@@ -78,7 +78,11 @@ impl App {
     }
 
     pub fn show_details(&mut self, entries: Vec<Entry>) {
-        self.details = entries;
+        let command_id = self.selected_candidate().map(|candidate| candidate.id);
+        self.details = entries
+            .into_iter()
+            .filter(|entry| Some(entry.command_id) == command_id)
+            .collect();
         self.detail_selected = 0;
         self.view = View::Details;
     }
@@ -106,6 +110,7 @@ impl App {
                     }
                     KeyCode::Enter if input == mutation_confirmation(&mutation) => {
                         self.view = View::Main;
+                        self.details.clear();
                         return Intent::Mutate(mutation);
                     }
                     _ => {}
@@ -168,6 +173,7 @@ impl App {
     fn handle_details(&mut self, key: KeyEvent) -> Intent {
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) | (KeyCode::Left, _) => {
+                self.details.clear();
                 self.view = View::Main;
                 Intent::None
             }
@@ -208,7 +214,7 @@ impl App {
                 }
             }
             KeyCode::Char('d') => {
-                if let Some(entry) = self.details.get(self.detail_selected) {
+                if let Some(entry) = self.selected_detail() {
                     self.view = View::Confirm {
                         mutation: Mutation::DeleteEntry(entry.id),
                         input: String::new(),
@@ -240,7 +246,15 @@ impl App {
             .map(|ranked| &ranked.candidate)
     }
 
+    fn selected_detail(&self) -> Option<&Entry> {
+        let command = self.selected_candidate()?;
+        self.details
+            .get(self.detail_selected)
+            .filter(|entry| entry.command_id == command.id)
+    }
+
     fn refresh(&mut self) {
+        self.details.clear();
         self.ranked = rank(
             &self.candidates,
             &self.query,
@@ -492,7 +506,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect) {
 }
 
 fn draw_manage(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, app: &App) {
-    let delete = if app.details.is_empty() {
+    let delete = if app.selected_detail().is_none() {
         ""
     } else {
         "d delete selected occurrence\n"
@@ -640,6 +654,35 @@ mod tests {
             app.handle_key(key(KeyCode::Enter)),
             Intent::Mutate(Mutation::ForgetCommand(4))
         );
+    }
+
+    #[test]
+    fn changing_commands_cannot_delete_a_previously_inspected_occurrence() {
+        let mut app = App::new(
+            vec![candidate(1, "alpha", 1), candidate(2, "beta", 0)],
+            String::new(),
+            1,
+        );
+        app.show_details(vec![Entry {
+            id: 9,
+            command_id: 1,
+            command: "alpha".into(),
+            started_at: 1,
+            finished_at: None,
+            duration_ms: None,
+            exit_code: None,
+            cwd: "/".into(),
+            shell: "bash".into(),
+            session_id: "s".into(),
+            source: "live".into(),
+        }]);
+        app.handle_key(key(KeyCode::Esc));
+        app.handle_key(key(KeyCode::Char('b')));
+        assert_eq!(app.selected_candidate().unwrap().id, 2);
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        app.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(app.view, View::Manage);
+        assert!(app.selected_detail().is_none());
     }
 
     #[test]
