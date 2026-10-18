@@ -270,7 +270,7 @@ impl Store {
         transaction.execute("DELETE FROM entries WHERE id = ?1", [entry_id])?;
         refresh_or_delete_command(&transaction, command_id)?;
         transaction.commit()?;
-        Ok(())
+        self.purge_deleted()
     }
 
     pub fn forget_command(&mut self, command_id: i64) -> Result<()> {
@@ -280,7 +280,7 @@ impl Store {
         if changed == 0 {
             return Err(Error::CommandNotFound(command_id));
         }
-        Ok(())
+        self.purge_deleted()
     }
 
     pub fn clear(&mut self) -> Result<()> {
@@ -288,12 +288,32 @@ impl Store {
         transaction.execute("DELETE FROM entries", [])?;
         transaction.execute("DELETE FROM commands", [])?;
         transaction.commit()?;
-        let _: (i64, i64, i64) =
-            self.connection
-                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                })?;
-        Ok(())
+        self.purge_deleted()
+    }
+
+    pub fn purge_deleted(&self) -> Result<()> {
+        let checkpoint = self
+            .connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            });
+        match checkpoint {
+            Ok((0, _, _)) => Ok(()),
+            Ok(_) => Err(Error::HistoryPurgePending),
+            Err(rusqlite::Error::SqliteFailure(code, _))
+                if matches!(
+                    code.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) =>
+            {
+                Err(Error::HistoryPurgePending)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn integrity_check(&self) -> Result<String> {
@@ -549,6 +569,51 @@ mod tests {
         store.clear().unwrap();
         assert!(store.entries(10).unwrap().is_empty());
         assert!(store.commands().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deletion_purges_plaintext_and_reports_blocking_readers() {
+        let secret = "fmn-synthetic-secret-for-deletion";
+        for action in 0..3 {
+            for blocked in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let database = root.path().join("history.db");
+                let mut store = Store::open(&database).unwrap();
+                let entry = store
+                    .record_start(secret, 1, "/", Shell::Bash, "s")
+                    .unwrap();
+                let command = store.commands().unwrap()[0].id;
+                let reader = rusqlite::Connection::open(&database).unwrap();
+                if blocked {
+                    reader.execute_batch("BEGIN").unwrap();
+                    let _: i64 = reader
+                        .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))
+                        .unwrap();
+                }
+                let result = match action {
+                    0 => store.delete_entry(entry),
+                    1 => store.forget_command(command),
+                    _ => store.clear(),
+                };
+                assert!(store.entries(1).unwrap().is_empty());
+                if blocked {
+                    assert!(matches!(result, Err(Error::HistoryPurgePending)));
+                    reader.execute_batch("ROLLBACK").unwrap();
+                    store.purge_deleted().unwrap();
+                } else {
+                    result.unwrap();
+                }
+                for path in [&database, &root.path().join("history.db-wal")] {
+                    let contents = std::fs::read(path).unwrap_or_default();
+                    assert!(
+                        !contents
+                            .windows(secret.len())
+                            .any(|bytes| bytes == secret.as_bytes()),
+                        "plaintext remains in {path:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

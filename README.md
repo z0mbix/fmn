@@ -84,6 +84,7 @@ fmn history list --json
 fmn history delete ENTRY_ID
 fmn history forget COMMAND_ID
 fmn history clear
+fmn history purge
 ```
 
 Import existing history safely:
@@ -127,6 +128,10 @@ Filters apply to live capture and imports. History remains entirely local;
 `fmn` has no network code or telemetry.
 Commands excluded from Bash's native history by `HISTCONTROL`, `HISTIGNORE`,
 or disabled history are also excluded from fmn capture.
+
+Deletion also checkpoints and truncates SQLite's write-ahead log. If another
+reader prevents cleanup, fmn reports that the rows were removed but cleanup is
+pending. Close other searches and run `fmn history purge` to retry cleanup.
 
 ## Reliability
 

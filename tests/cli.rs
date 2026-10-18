@@ -96,6 +96,44 @@ fn clear_requires_yes_when_noninteractive() {
 }
 
 #[test]
+fn deletion_reports_pending_cleanup_and_purge_retries_it() {
+    let root = tempfile::tempdir().unwrap();
+    fmn(root.path())
+        .args(["history", "list"])
+        .assert()
+        .success();
+    let database = root.path().join("history.db");
+    let mut store = fmn::storage::Store::open(&database).unwrap();
+    let entry = store
+        .record_start(
+            "echo synthetic-secret",
+            1,
+            "/",
+            fmn::model::Shell::Bash,
+            "s",
+        )
+        .unwrap();
+    let reader = Connection::open(&database).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    reader
+        .query_row("SELECT COUNT(*) FROM entries", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    fmn(root.path())
+        .args(["history", "delete", &entry.to_string()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cleanup is pending"));
+    assert!(store.entries(1).unwrap().is_empty());
+    reader.execute_batch("ROLLBACK").unwrap();
+    fmn(root.path())
+        .args(["history", "purge"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn search_requires_an_interactive_terminal() {
     let root = tempfile::tempdir().unwrap();
     fmn(root.path())

@@ -56,6 +56,8 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum HistoryCommand {
+    /// Retry cleanup of deleted history retained in SQLite's write-ahead log
+    Purge,
     List {
         #[arg(long, default_value_t = 100)]
         limit: usize,
@@ -262,6 +264,7 @@ fn run(cli: Cli) -> fmn::Result<ExitCode> {
 
 fn run_history(command: HistoryCommand, store: &mut Store) -> fmn::Result<()> {
     match command {
+        HistoryCommand::Purge => store.purge_deleted()?,
         HistoryCommand::List { limit, json } => {
             let entries = store.entries(limit)?;
             if json {

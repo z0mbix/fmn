@@ -36,7 +36,10 @@ fn imports_and_deletions_can_run_alongside_live_capture() {
                                     .unwrap()
                             );
                         }
-                        1 => store.delete_entry(entry_id).unwrap(),
+                        1 => match store.delete_entry(entry_id) {
+                            Ok(()) | Err(fmn::Error::HistoryPurgePending) => {}
+                            Err(error) => panic!("{error}"),
+                        },
                         _ => {
                             let session = format!("live-{worker}");
                             store
@@ -59,6 +62,7 @@ fn imports_and_deletions_can_run_alongside_live_capture() {
         handle.join().unwrap();
     }
     let store = Store::open(&database).unwrap();
+    store.purge_deleted().unwrap();
     assert_eq!(store.entries(COUNT * 5).unwrap().len(), COUNT * 4);
     assert_eq!(store.integrity_check().unwrap(), "ok");
 }

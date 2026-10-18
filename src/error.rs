@@ -22,6 +22,10 @@ pub enum Error {
     EntryNotFound(i64),
     #[error("command {0} does not exist")]
     CommandNotFound(i64),
+    #[error(
+        "WAL cleanup is pending because another connection is using history; close other searches and run `fmn history purge`"
+    )]
+    HistoryPurgePending,
     #[error("unsupported Atuin database: {0}")]
     UnsupportedAtuinDatabase(String),
 }
