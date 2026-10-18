@@ -69,6 +69,8 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)?;
+        connection.busy_timeout(Duration::from_millis(500))?;
+        checked_schema_version(&connection)?;
         Self::configure(&connection, true)?;
         let mut store = Self { connection };
         store.migrate()?;
@@ -99,25 +101,16 @@ impl Store {
     }
 
     fn migrate(&mut self) -> Result<()> {
-        let migrations_exist: bool = self.connection.query_row(
-            "SELECT EXISTS(
-                SELECT 1 FROM sqlite_master
-                WHERE type = 'table' AND name = 'schema_migrations'
-             )",
-            [],
-            |row| row.get(0),
-        )?;
-        if migrations_exist {
-            let version = self.schema_version()?;
-            if version >= CURRENT_SCHEMA_VERSION {
-                return Ok(());
-            }
+        if checked_schema_version(&self.connection)? == CURRENT_SCHEMA_VERSION {
+            return Ok(());
         }
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute_batch(SCHEMA)?;
-        transaction.execute_batch(SCHEMA_V2)?;
+        if checked_schema_version(&transaction)? < CURRENT_SCHEMA_VERSION {
+            transaction.execute_batch(SCHEMA)?;
+            transaction.execute_batch(SCHEMA_V2)?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -409,6 +402,29 @@ impl Store {
     }
 }
 
+fn checked_schema_version(connection: &Connection) -> Result<i64> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
+        [], |row| row.get(0),
+    )?;
+    let version = if exists {
+        connection.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?
+    } else {
+        0
+    };
+    if version > CURRENT_SCHEMA_VERSION {
+        return Err(Error::UnsupportedSchema {
+            found: version,
+            supported: CURRENT_SCHEMA_VERSION,
+        });
+    }
+    Ok(version)
+}
+
 fn upsert_command(transaction: &Transaction<'_>, command: &str, at: i64) -> Result<i64> {
     transaction.execute(
         "INSERT INTO commands(command, first_seen_at, last_seen_at, use_count)
@@ -489,6 +505,25 @@ mod tests {
             super::CURRENT_SCHEMA_VERSION
         );
         assert_eq!(store.integrity_check().unwrap(), "ok");
+    }
+
+    #[test]
+    fn rejects_future_schemas_before_modifying_the_database() {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("history.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection.execute_batch(super::SCHEMA).unwrap();
+        connection
+            .execute("INSERT INTO schema_migrations VALUES(99, 0)", [])
+            .unwrap();
+        drop(connection);
+        let before = std::fs::read(&database).unwrap();
+        assert!(matches!(
+            Store::open(&database),
+            Err(Error::UnsupportedSchema { found: 99, .. })
+        ));
+        assert_eq!(std::fs::read(&database).unwrap(), before);
+        assert!(!root.path().join("history.db-wal").exists());
     }
 
     #[test]

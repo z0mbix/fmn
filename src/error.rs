@@ -26,6 +26,10 @@ pub enum Error {
         "WAL cleanup is pending because another connection is using history; close other searches and run `fmn history purge`"
     )]
     HistoryPurgePending,
+    #[error(
+        "history schema {found} is newer than the supported version {supported}; use a newer fmn release"
+    )]
+    UnsupportedSchema { found: i64, supported: i64 },
     #[error("unsupported Atuin database: {0}")]
     UnsupportedAtuinDatabase(String),
 }
