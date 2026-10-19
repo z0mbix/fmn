@@ -1,8 +1,34 @@
 use std::sync::{Arc, Barrier};
 use std::thread;
+use std::time::Duration;
 
 use fmn::model::Shell;
 use fmn::storage::Store;
+
+#[test]
+fn capture_waits_for_a_contending_writer() {
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("history.db");
+    let mut store = Store::open(&database).unwrap();
+    let writer = rusqlite::Connection::open(&database).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let (started, waiting) = std::sync::mpsc::channel();
+    let capture = thread::spawn(move || {
+        started.send(()).unwrap();
+        store.record_start("echo captured", 1, "/", Shell::Bash, "s")?;
+        store.record_finish("s", 2, 0)?;
+        Ok::<_, fmn::Error>(store)
+    });
+    waiting.recv().unwrap();
+    thread::sleep(Duration::from_millis(750));
+    writer.execute_batch("ROLLBACK").unwrap();
+    let store = capture.join().unwrap().unwrap();
+    let entries = store.entries(10).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].command, "echo captured");
+    assert_eq!(entries[0].exit_code, Some(0));
+    assert_eq!(store.integrity_check().unwrap(), "ok");
+}
 
 #[test]
 fn imports_and_deletions_can_run_alongside_live_capture() {

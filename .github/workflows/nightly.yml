@@ -19,8 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
       - run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=300
 
   mutation:
@@ -31,7 +35,11 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-mutants
+      - name: Install shell test dependencies
+        run: sudo apt-get update && sudo apt-get install -y fish zsh expect
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
       - run: cargo mutants --workspace
 
   stress:

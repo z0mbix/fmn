@@ -32,7 +32,9 @@ jobs:
       - name: Install shell test dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install fish shellcheck
-      - uses: taiki-e/install-action@just
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
       - run: just check
       - name: ShellCheck generated Bash integration
         run: cargo run --quiet -- init bash | shellcheck -s bash -
@@ -57,8 +59,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install shell test dependencies
         run: sudo apt-get update && sudo apt-get install -y fish zsh expect
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: taiki-e/install-action@just
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,just
       - run: just coverage
 
   dependencies:

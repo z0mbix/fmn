@@ -109,7 +109,8 @@ fi
 const BASH_INIT: &str = r#"# fmn shell integration
 if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
     __FMN_INITIALIZED=1
-    export FMN_SESSION_ID="$(command fmn _session)"
+    FMN_SESSION_ID="$(command fmn _session)" || FMN_SESSION_ID=
+    export FMN_SESSION_ID
     __fmn_ready=0
     __fmn_command_active=0
     __fmn_in_hook=0

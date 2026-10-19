@@ -9,6 +9,8 @@ use crate::{Error, Result};
 
 pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
+const WRITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 const SEARCH_CANDIDATES_SQL: &str = "SELECT
     c.id, c.command, c.first_seen_at, c.last_seen_at, c.use_count,
     COALESCE(d.use_count, 0), d.last_seen_at, newest.cwd, newest.exit_code
@@ -97,7 +99,7 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)?;
-        connection.busy_timeout(Duration::from_millis(500))?;
+        connection.busy_timeout(WRITE_BUSY_TIMEOUT)?;
         checked_schema_version(&connection)?;
         Self::configure(&connection, true)?;
         let mut store = Self { connection };
@@ -114,7 +116,7 @@ impl Store {
     }
 
     fn configure(connection: &Connection, on_disk: bool) -> Result<()> {
-        connection.busy_timeout(Duration::from_millis(500))?;
+        connection.busy_timeout(WRITE_BUSY_TIMEOUT)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "secure_delete", "ON")?;
         if on_disk {
@@ -321,6 +323,9 @@ impl Store {
     }
 
     pub fn purge_deleted(&self) -> Result<()> {
+        // A waiting TRUNCATE checkpoint holds the writer lock while readers
+        // finish. Defer cleanup immediately instead of blocking live capture.
+        self.connection.busy_timeout(Duration::ZERO)?;
         let checkpoint = self
             .connection
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
@@ -330,6 +335,7 @@ impl Store {
                     row.get::<_, i64>(2)?,
                 ))
             });
+        self.connection.busy_timeout(WRITE_BUSY_TIMEOUT)?;
         match checkpoint {
             Ok((0, _, _)) => Ok(()),
             Ok(_) => Err(Error::HistoryPurgePending),
@@ -745,6 +751,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn purge_does_not_wait_for_readers_and_restores_the_write_timeout() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static BUSY_HANDLER_CALLED: AtomicBool = AtomicBool::new(false);
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("history.db");
+        let mut store = Store::open(&database).unwrap();
+        let entry = store.record_start("pwd", 1, "/", Shell::Bash, "s").unwrap();
+        let reader = rusqlite::Connection::open(&database).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT * FROM entries;")
+            .unwrap();
+        store
+            .connection
+            .busy_handler(Some(|_| {
+                BUSY_HANDLER_CALLED.store(true, Ordering::Relaxed);
+                false
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            store.delete_entry(entry),
+            Err(Error::HistoryPurgePending)
+        ));
+        assert!(!BUSY_HANDLER_CALLED.load(Ordering::Relaxed));
+        let timeout: i64 = store
+            .connection
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5_000);
+        store
+            .record_start("echo after deletion", 2, "/", Shell::Bash, "s")
+            .unwrap();
+        reader.execute_batch("ROLLBACK").unwrap();
+        store.purge_deleted().unwrap();
     }
 
     #[test]
