@@ -33,7 +33,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ inputs.release_tag || fromJSON(inputs.plan).announcement_tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Validate published stable release
@@ -65,7 +65,7 @@ jobs:
             --pattern 'fmn-*.tar.xz' --pattern 'sha256.sum'
       - name: Check out the tap with its dedicated deploy key
         if: steps.release.outputs.publish == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: z0mbix/homebrew-tap
           ref: main
