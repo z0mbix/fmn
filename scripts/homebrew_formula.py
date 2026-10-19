@@ -34,6 +34,8 @@ def homebrew_formula(tag, directory):
     version = stable_version(tag)
     checksums = {}
     for line in (directory / "sha256.sum").read_text().splitlines():
+        if not line.strip():
+            continue
         digest, filename = line.split()
         filename = filename.removeprefix("*")
         if filename in checksums:

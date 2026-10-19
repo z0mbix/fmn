@@ -59,6 +59,10 @@ class HomebrewFormulaTests(unittest.TestCase):
         self.write_checksums([line.replace("  ", " *") for line in self.checksums])
         self.assertIn("class Fmn < Formula", homebrew_formula("v0.1.0", self.directory))
 
+    def test_accepts_dist_checksum_spacing(self):
+        self.write_checksums(["\n"] + [line.replace("  ", " *") + "\n" for line in self.checksums])
+        self.assertEqual(homebrew_formula("v0.1.0", self.directory).count("sha256 "), 4)
+
     def test_requires_stable_semver_tag(self):
         for tag in ("0.1.0", "v01.0.0", "v0.1.0-rc.1", "v0.1.0/other"):
             with self.subTest(tag=tag), self.assertRaises(ValueError):
