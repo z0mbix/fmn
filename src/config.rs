@@ -9,6 +9,36 @@ use crate::{Error, Result};
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub history: HistoryConfig,
+    pub ui: UiConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Theme {
+    #[default]
+    Mint,
+    Rose,
+    Iris,
+    Terminal,
+    NoColor,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiConfig {
+    pub theme: Theme,
+    pub show_inspector: bool,
+    pub execute_on_select: bool,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            theme: Theme::default(),
+            show_inspector: true,
+            execute_on_select: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -72,5 +102,40 @@ mod tests {
         let path = root.path().join("config.toml");
         std::fs::write(&path, "[history]\nunknown = true\n").unwrap();
         assert!(Config::load(&path).is_err());
+    }
+
+    #[test]
+    fn ui_defaults_and_theme_names_are_validated() {
+        use super::Theme;
+
+        let default: Config = toml::from_str("").unwrap();
+        assert_eq!(default.ui.theme, Theme::Mint);
+        assert!(default.ui.show_inspector);
+        assert!(!default.ui.execute_on_select);
+        let config: Config =
+            toml::from_str("[ui]\ntheme = 'rose'\nshow_inspector = false").unwrap();
+        assert_eq!(config.ui.theme, Theme::Rose);
+        assert!(!config.ui.show_inspector);
+        assert!(toml::from_str::<Config>("[ui]\ntheme = 'unknown'").is_err());
+        assert!(toml::from_str::<Config>("[ui]\nunknown = true").is_err());
+    }
+
+    #[test]
+    fn execution_requires_an_explicit_boolean_opt_in() {
+        for contents in ["", "[ui]", "[ui]\nexecute_on_select = false"] {
+            assert!(
+                !toml::from_str::<Config>(contents)
+                    .unwrap()
+                    .ui
+                    .execute_on_select
+            );
+        }
+        assert!(
+            toml::from_str::<Config>("[ui]\nexecute_on_select = true")
+                .unwrap()
+                .ui
+                .execute_on_select
+        );
+        assert!(toml::from_str::<Config>("[ui]\nexecute_on_select = 'true'").is_err());
     }
 }

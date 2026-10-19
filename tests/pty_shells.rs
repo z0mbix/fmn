@@ -456,6 +456,23 @@ fn bash_vi_ctrl_r_inserts_without_executing_until_enter() {
 }
 
 #[test]
+fn zsh_ctrl_r_inserts_without_executing_until_enter() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("zsh");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(
+        directory.join(".zshrc"),
+        "PS1='FMN> '\neval \"$(fmn init zsh)\"\n",
+    )
+    .unwrap();
+    run_ctrl_r_expect(
+        &["zsh", "-d", "-i"],
+        &root.path().join("data"),
+        &[("ZDOTDIR", &directory)],
+    );
+}
+
+#[test]
 fn bash_multiline_selection_cannot_execute_before_enter() {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("data");
@@ -528,5 +545,97 @@ expect eof
     assert_eq!(
         std::fs::read_to_string(data.join("multiline")).unwrap(),
         "first\nsecond\n"
+    );
+}
+
+#[test]
+fn focus_dialogs_resize_paste_and_terminal_restoration_work_in_a_real_pty() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let command = "cargo test --all-features";
+    let mut store = Store::open(&data.join("history.db")).unwrap();
+    store
+        .record_start(command, 1, "/repo", fmn::model::Shell::Zsh, "seed")
+        .unwrap();
+    store.record_finish("seed", 1_801, 0).unwrap();
+    drop(store);
+    let script = r#"
+set timeout 10
+log_user 1
+proc see {text} {
+    expect {
+        -exact $text {}
+        timeout {puts stderr "Timed out waiting for $text"; exit 3}
+        eof {exit 4}
+    }
+}
+spawn -noecho sh -c {stty rows 40 cols 120; before=$(stty -g); fmn search --cwd /repo; after=$(stty -g); test "$before" = "$after" || exit 7; printf '\nFMN_TERMINAL_RESTORED\n'}
+see "INSPECTOR"
+send -- "\033OP"
+see "Help"
+send -- "\033"
+see "\033\[?25h"
+send -- "\033OR"
+see "Colour theme"
+send -- "\033\[B"
+after 100
+send -- "\r"
+see "\033\[?25h"
+exec stty rows 30 cols 80 < $spawn_out(slave,name) 2>@ stderr
+if {[exec stty size < $spawn_out(slave,name) 2>@ stderr] ne "30 80"} {exit 8}
+after 100
+send -- "\033OQ"
+see "Occurrences"
+send -- "\030"
+see "Command actions"
+send -- "d"
+see "\033\[?25h"
+send -- "\033"
+see "\033\[?25l"
+send -- "\033"
+see "\033\[?25h"
+send -- "\033\[200~cargo\033\[201~"
+see "cargo"
+send -- "\r"
+see "\033\[?2004l"
+see "\033\[?1006l"
+see "\033\[?1049l"
+see "cargo test --all-features"
+see "FMN_TERMINAL_RESTORED"
+expect eof
+set status [wait]
+exit [lindex $status 3]
+"#;
+    let mut driver = tempfile::NamedTempFile::new().unwrap();
+    driver.write_all(script.as_bytes()).unwrap();
+    let output = Command::new("expect")
+        .arg(driver.path())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                binary_dir().display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .env("FMN_DATA_DIR", &data)
+        .env("FMN_CONFIG", root.path().join("config.toml"))
+        .env("TERM", "xterm-256color")
+        .env_remove("NO_COLOR")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Focus PTY failed: {}\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let store = Store::open(&data.join("history.db")).unwrap();
+    assert_eq!(
+        store.entries(10).unwrap().len(),
+        1,
+        "cancelled confirmation must preserve the occurrence"
     );
 }

@@ -163,14 +163,17 @@ fn run(cli: Cli) -> fmn::Result<ExitCode> {
                     .into_owned()
             });
             let selection = if shell_integration {
-                fmn::tui::run_for_shell(&mut store, query, cwd)?
+                fmn::tui::run_for_shell(&mut store, query, cwd, &config.ui)?
             } else {
-                fmn::tui::run(&mut store, query, cwd)?
+                fmn::tui::run(&mut store, query, cwd, &config.ui)?
             };
             match selection {
                 Some(command) => {
                     if shell_integration {
                         eprint!("{command}");
+                        if config.ui.execute_on_select {
+                            return Ok(ExitCode::from(fmn::shell::EXECUTE_SELECTION_EXIT_CODE));
+                        }
                     } else {
                         print!("{command}");
                     }

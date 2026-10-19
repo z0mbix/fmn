@@ -253,15 +253,23 @@ impl Store {
     }
 
     pub fn entries_for_command(&self, command_id: i64) -> Result<Vec<Entry>> {
+        self.command_entries(command_id, -1)
+    }
+
+    pub fn preview_entries_for_command(&self, command_id: i64) -> Result<Vec<Entry>> {
+        self.command_entries(command_id, 3)
+    }
+
+    fn command_entries(&self, command_id: i64, limit: i64) -> Result<Vec<Entry>> {
         let mut statement = self.connection.prepare(
             "SELECT e.id, e.command_id, c.command, e.started_at, e.finished_at,
                     e.duration_ms, e.exit_code, e.cwd, e.shell, e.session_id, e.source
              FROM entries e
              JOIN commands c ON c.id = e.command_id
              WHERE e.command_id = ?1
-             ORDER BY e.started_at DESC, e.id DESC",
+             ORDER BY e.started_at DESC, e.id DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map([command_id], map_entry)?;
+        let rows = statement.query_map([command_id, limit], map_entry)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -771,6 +779,38 @@ mod tests {
             store.entries_for_command(candidates[0].id).unwrap().len(),
             2
         );
+    }
+
+    #[test]
+    fn inspector_preview_returns_only_the_three_newest_occurrences() {
+        let mut store = Store::open_in_memory().unwrap();
+        for id in 0..8 {
+            let session = format!("session-{id}");
+            store
+                .record_start("cargo test", id, "/repo", Shell::Zsh, &session)
+                .unwrap();
+            store.record_finish(&session, id + 1, 0).unwrap();
+        }
+        store
+            .record_start("other", 100, "/repo", Shell::Zsh, "other")
+            .unwrap();
+        let command = store
+            .search_candidates("/repo")
+            .unwrap()
+            .into_iter()
+            .find(|command| command.command == "cargo test")
+            .unwrap();
+        let preview = store.preview_entries_for_command(command.id).unwrap();
+        assert_eq!(
+            preview
+                .iter()
+                .map(|entry| entry.started_at)
+                .collect::<Vec<_>>(),
+            [7, 6, 5]
+        );
+        assert!(preview.iter().all(|entry| entry.command_id == command.id));
+        assert_eq!(store.entries_for_command(command.id).unwrap().len(), 8);
+        assert!(store.preview_entries_for_command(-1).unwrap().is_empty());
     }
 
     fn assert_directory_cache(store: &Store) {

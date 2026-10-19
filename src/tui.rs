@@ -1,22 +1,30 @@
 use std::io::{self, IsTerminal, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::layout::{Position, Rect};
+use unicode_segmentation::UnicodeSegmentation;
 
+use crate::config::{Theme, UiConfig};
 use crate::model::{Entry, SearchCandidate};
 use crate::search::{RankedMatch, Ranker};
 use crate::storage::Store;
 use crate::{Error, Result};
+
+mod render;
+mod theme;
+
+use render::draw;
+use theme::THEMES;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mutation {
@@ -40,12 +48,24 @@ enum View {
     Details,
     Help,
     Manage,
+    Themes,
     Confirm { mutation: Mutation, input: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Insert,
+    Inspect,
+    Theme,
+    Delete,
+    Forget,
+    Clear,
 }
 
 #[derive(Debug)]
 pub struct App {
     query: String,
+    cursor: usize,
     candidates: Vec<SearchCandidate>,
     ranked: Vec<RankedMatch>,
     ranker: Ranker,
@@ -54,6 +74,16 @@ pub struct App {
     view: View,
     details: Vec<Entry>,
     detail_selected: usize,
+    preview: Vec<Entry>,
+    preview_command_id: Option<i64>,
+    return_to_details: bool,
+    action_selected: usize,
+    theme: Theme,
+    previous_theme: Theme,
+    show_inspector: bool,
+    execute_on_select: bool,
+    current_dir: String,
+    home_dir: Option<String>,
     now_millis: i64,
 }
 
@@ -62,8 +92,10 @@ impl App {
         let mut ranker = Ranker::default();
         let mut ranked = Vec::new();
         ranker.rank_into(&candidates, &query, false, now_millis, &mut ranked);
+        let cursor = query.len();
         Self {
             query,
+            cursor,
             candidates,
             ranked,
             ranker,
@@ -72,6 +104,16 @@ impl App {
             view: View::Main,
             details: Vec::new(),
             detail_selected: 0,
+            preview: Vec::new(),
+            preview_command_id: None,
+            return_to_details: false,
+            action_selected: 0,
+            theme: Theme::default(),
+            previous_theme: Theme::default(),
+            show_inspector: true,
+            execute_on_select: false,
+            current_dir: String::new(),
+            home_dir: std::env::var("HOME").ok(),
             now_millis,
         }
     }
@@ -89,6 +131,83 @@ impl App {
             .collect();
         self.detail_selected = 0;
         self.view = View::Details;
+        self.return_to_details = false;
+    }
+
+    fn set_preview(&mut self, command_id: i64, entries: Vec<Entry>) {
+        if self.selected_candidate().map(|candidate| candidate.id) == Some(command_id) {
+            self.preview = entries
+                .into_iter()
+                .filter(|entry| entry.command_id == command_id)
+                .take(3)
+                .collect();
+            self.preview_command_id = Some(command_id);
+        }
+    }
+
+    fn open_overlay(&mut self, view: View) {
+        if matches!(self.view, View::Main | View::Details) {
+            self.return_to_details = self.view == View::Details;
+        }
+        self.action_selected = 0;
+        if view == View::Themes {
+            self.previous_theme = self.theme;
+        }
+        self.view = view;
+    }
+
+    fn close_overlay(&mut self) {
+        self.view = if self.return_to_details {
+            View::Details
+        } else {
+            View::Main
+        };
+        self.return_to_details = false;
+    }
+
+    fn actions(&self) -> Vec<Action> {
+        let mut actions = vec![Action::Insert, Action::Inspect, Action::Theme];
+        if self.selected_detail().is_some() {
+            actions.push(Action::Delete);
+        }
+        actions.extend([Action::Forget, Action::Clear]);
+        actions
+    }
+
+    fn activate_action(&mut self, action: Action) -> Intent {
+        match action {
+            Action::Insert => self
+                .selected_candidate()
+                .map(|candidate| Intent::Accept(candidate.command.clone()))
+                .unwrap_or(Intent::None),
+            Action::Inspect => self
+                .selected_candidate()
+                .map(|candidate| Intent::LoadDetails(candidate.id))
+                .unwrap_or(Intent::None),
+            Action::Theme => {
+                self.open_overlay(View::Themes);
+                Intent::None
+            }
+            action => {
+                let mutation = match action {
+                    Action::Delete => self
+                        .selected_detail()
+                        .map(|entry| Mutation::DeleteEntry(entry.id)),
+                    Action::Forget => self
+                        .selected_candidate()
+                        .map(|candidate| Mutation::ForgetCommand(candidate.id)),
+                    Action::Clear => Some(Mutation::Clear),
+                    _ => None,
+                };
+                if let Some(mutation) = mutation {
+                    self.view = View::Confirm {
+                        mutation,
+                        input: String::new(),
+                    };
+                }
+                Intent::None
+            }
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Intent {
@@ -100,10 +219,27 @@ impl App {
             View::Main => self.handle_main(key),
             View::Details => self.handle_details(key),
             View::Help | View::Manage => self.handle_overlay(key),
+            View::Themes => {
+                let index = THEMES
+                    .iter()
+                    .position(|(theme, _)| *theme == self.theme)
+                    .unwrap_or(0);
+                match key.code {
+                    KeyCode::Esc => {
+                        self.theme = self.previous_theme;
+                        self.close_overlay();
+                    }
+                    KeyCode::Enter => self.close_overlay(),
+                    KeyCode::Up => self.theme = THEMES[index.saturating_sub(1)].0,
+                    KeyCode::Down => self.theme = THEMES[(index + 1).min(THEMES.len() - 1)].0,
+                    _ => {}
+                }
+                Intent::None
+            }
             View::Confirm { mutation, input } => {
                 let mutation = mutation.clone();
                 match key.code {
-                    KeyCode::Esc => self.view = View::Main,
+                    KeyCode::Esc => self.close_overlay(),
                     KeyCode::Backspace => {
                         input.pop();
                     }
@@ -115,6 +251,9 @@ impl App {
                     KeyCode::Enter if input == mutation_confirmation(&mutation) => {
                         self.view = View::Main;
                         self.details.clear();
+                        self.preview.clear();
+                        self.preview_command_id = None;
+                        self.return_to_details = false;
                         return Intent::Mutate(mutation);
                     }
                     _ => {}
@@ -151,22 +290,72 @@ impl App {
                 .map(|candidate| Intent::LoadDetails(candidate.id))
                 .unwrap_or(Intent::None),
             (KeyCode::Char('?'), KeyModifiers::CONTROL) | (KeyCode::F(1), _) => {
-                self.view = View::Help;
+                self.open_overlay(View::Help);
                 Intent::None
             }
             (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
-                self.view = View::Manage;
+                self.open_overlay(View::Manage);
+                Intent::None
+            }
+            (KeyCode::F(3), _) => {
+                self.open_overlay(View::Themes);
+                Intent::None
+            }
+            (KeyCode::F(4), _) => {
+                self.show_inspector = !self.show_inspector;
+                Intent::None
+            }
+            (KeyCode::Left, _) => {
+                self.cursor = self.query[..self.cursor]
+                    .grapheme_indices(true)
+                    .next_back()
+                    .map_or(0, |(index, _)| index);
+                Intent::None
+            }
+            (KeyCode::Right, _) => {
+                if let Some(grapheme) = self.query[self.cursor..].graphemes(true).next() {
+                    self.cursor += grapheme.len();
+                }
+                Intent::None
+            }
+            (KeyCode::Home, _) => {
+                self.cursor = 0;
+                Intent::None
+            }
+            (KeyCode::End, _) => {
+                self.cursor = self.query.len();
+                Intent::None
+            }
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                self.query.clear();
+                self.cursor = 0;
+                self.refresh();
                 Intent::None
             }
             (KeyCode::Backspace, _) => {
-                self.query.pop();
+                let previous = self.query[..self.cursor]
+                    .grapheme_indices(true)
+                    .next_back()
+                    .map_or(0, |(index, _)| index);
+                self.query.drain(previous..self.cursor);
+                self.cursor = previous;
+                self.refresh();
+                Intent::None
+            }
+            (KeyCode::Delete, _) => {
+                if let Some(grapheme) = self.query[self.cursor..].graphemes(true).next() {
+                    let end = self.cursor + grapheme.len();
+                    self.query.drain(self.cursor..end);
+                }
                 self.refresh();
                 Intent::None
             }
             (KeyCode::Char(character), modifiers)
-                if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
+                if !character.is_control()
+                    && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
             {
-                self.query.push(character);
+                self.query.insert(self.cursor, character);
+                self.cursor += character.len_utf8();
                 self.refresh();
                 Intent::None
             }
@@ -197,7 +386,15 @@ impl App {
                 Intent::None
             }
             (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
-                self.view = View::Manage;
+                self.open_overlay(View::Manage);
+                Intent::None
+            }
+            (KeyCode::F(1), _) => {
+                self.open_overlay(View::Help);
+                Intent::None
+            }
+            (KeyCode::F(3), _) => {
+                self.open_overlay(View::Themes);
                 Intent::None
             }
             _ => Intent::None,
@@ -206,39 +403,21 @@ impl App {
 
     fn handle_overlay(&mut self, key: KeyEvent) -> Intent {
         if self.view == View::Help {
-            self.view = View::Main;
+            self.close_overlay();
             return Intent::None;
         }
         match key.code {
-            KeyCode::Esc => self.view = View::Main,
-            KeyCode::Char('i') | KeyCode::Enter => {
-                if let Some(command_id) = self.selected_candidate().map(|candidate| candidate.id) {
-                    self.view = View::Main;
-                    return Intent::LoadDetails(command_id);
-                }
+            KeyCode::Esc => self.close_overlay(),
+            KeyCode::Up => self.action_selected = self.action_selected.saturating_sub(1),
+            KeyCode::Down => {
+                self.action_selected = (self.action_selected + 1).min(self.actions().len() - 1)
             }
-            KeyCode::Char('d') => {
-                if let Some(entry) = self.selected_detail() {
-                    self.view = View::Confirm {
-                        mutation: Mutation::DeleteEntry(entry.id),
-                        input: String::new(),
-                    };
-                }
-            }
-            KeyCode::Char('f') => {
-                if let Some(command_id) = self.selected_candidate().map(|candidate| candidate.id) {
-                    self.view = View::Confirm {
-                        mutation: Mutation::ForgetCommand(command_id),
-                        input: String::new(),
-                    };
-                }
-            }
-            KeyCode::Char('c') => {
-                self.view = View::Confirm {
-                    mutation: Mutation::Clear,
-                    input: String::new(),
-                };
-            }
+            KeyCode::Enter => return self.activate_action(self.actions()[self.action_selected]),
+            KeyCode::Char('i') | KeyCode::F(2) => return self.activate_action(Action::Inspect),
+            KeyCode::Char('t') | KeyCode::F(3) => return self.activate_action(Action::Theme),
+            KeyCode::Char('d') => return self.activate_action(Action::Delete),
+            KeyCode::Char('f') => return self.activate_action(Action::Forget),
+            KeyCode::Char('c') => return self.activate_action(Action::Clear),
             _ => {}
         }
         Intent::None
@@ -251,6 +430,9 @@ impl App {
     }
 
     fn selected_detail(&self) -> Option<&Entry> {
+        if self.view != View::Details && !self.return_to_details {
+            return None;
+        }
         let command = self.selected_candidate()?;
         self.details
             .get(self.detail_selected)
@@ -259,6 +441,9 @@ impl App {
 
     fn refresh(&mut self) {
         self.details.clear();
+        self.detail_selected = 0;
+        self.preview.clear();
+        self.preview_command_id = None;
         self.ranker.rank_into(
             &self.candidates,
             &self.query,
@@ -268,58 +453,178 @@ impl App {
         );
         self.selected = self.selected.min(self.ranked.len().saturating_sub(1));
     }
+
+    fn handle_paste(&mut self, text: &str) {
+        if self.view == View::Main {
+            let text: String = text
+                .chars()
+                .map(|c| if c.is_whitespace() { ' ' } else { c })
+                .filter(|c| !c.is_control())
+                .collect();
+            self.query.insert_str(self.cursor, &text);
+            self.cursor += text.len();
+            self.refresh();
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) -> Intent {
+        let position = Position::new(mouse.column, mouse.row);
+        match self.view {
+            View::Main => {
+                let layout = render::geometry(area, self.show_inspector);
+                let (rows, height) = render::candidate_rows(layout.results);
+                if rows.contains(position) {
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let range = visible_range(
+                                self.selected,
+                                self.ranked.len(),
+                                rows.height / height,
+                            );
+                            let index = range.start + usize::from((mouse.row - rows.y) / height);
+                            if index < range.end {
+                                self.selected = index;
+                            }
+                        }
+                        MouseEventKind::ScrollUp => self.selected = self.selected.saturating_sub(1),
+                        MouseEventKind::ScrollDown => {
+                            self.selected =
+                                (self.selected + 1).min(self.ranked.len().saturating_sub(1))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            View::Details => {
+                let rows = render::details_rows(area);
+                if rows.contains(position) {
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let range = visible_range(
+                                self.detail_selected,
+                                self.details.len(),
+                                rows.height / 2,
+                            );
+                            let index = range.start + usize::from((mouse.row - rows.y) / 2);
+                            if index < range.end {
+                                self.detail_selected = index;
+                            }
+                        }
+                        MouseEventKind::ScrollUp => {
+                            self.detail_selected = self.detail_selected.saturating_sub(1)
+                        }
+                        MouseEventKind::ScrollDown => {
+                            self.detail_selected =
+                                (self.detail_selected + 1).min(self.details.len().saturating_sub(1))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            View::Manage | View::Themes
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
+            {
+                let rows = render::menu_rows(area, self);
+                if rows.contains(position) {
+                    let index = usize::from(mouse.row - rows.y);
+                    if self.view == View::Manage && index < self.actions().len() {
+                        self.action_selected = index;
+                        return self.activate_action(self.actions()[index]);
+                    }
+                    if self.view == View::Themes && index < THEMES.len() {
+                        self.theme = THEMES[index].0;
+                        self.close_overlay();
+                    }
+                }
+            }
+            _ => {}
+        }
+        Intent::None
+    }
 }
 
-pub fn run(store: &mut Store, query: String, cwd: String) -> Result<Option<String>> {
+pub fn run(
+    store: &mut Store,
+    query: String,
+    cwd: String,
+    config: &UiConfig,
+) -> Result<Option<String>> {
     if !io::stderr().is_terminal() || !io::stdin().is_terminal() {
         return Err(Error::Io(io::Error::other(
             "search requires an interactive terminal",
         )));
     }
 
-    run_with_backend(store, query, cwd, io::stderr())
+    let config = UiConfig {
+        execute_on_select: false,
+        ..config.clone()
+    };
+    run_with_backend(store, query, cwd, &config, io::stderr())
 }
 
-pub fn run_for_shell(store: &mut Store, query: String, cwd: String) -> Result<Option<String>> {
+pub fn run_for_shell(
+    store: &mut Store,
+    query: String,
+    cwd: String,
+    config: &UiConfig,
+) -> Result<Option<String>> {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err(Error::Io(io::Error::other(
             "search requires an interactive terminal",
         )));
     }
-    run_with_backend(store, query, cwd, io::stdout())
+    run_with_backend(store, query, cwd, config, io::stdout())
 }
 
 fn run_with_backend<W: Write>(
     store: &mut Store,
     query: String,
     cwd: String,
+    config: &UiConfig,
     writer: W,
 ) -> Result<Option<String>> {
     let candidates = store.search_candidates(&cwd)?;
     let mut app = App::new(candidates, query, now_millis());
+    app.theme = if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+        Theme::NoColor
+    } else {
+        config.theme
+    };
+    app.show_inspector = config.show_inspector;
+    app.execute_on_select = config.execute_on_select;
+    app.current_dir = cwd.clone();
     let mut terminal = TuiTerminal::enter(writer)?;
 
     loop {
+        if let Some(command_id) = app.selected_candidate().map(|candidate| candidate.id)
+            && app.preview_command_id != Some(command_id)
+        {
+            app.set_preview(command_id, store.preview_entries_for_command(command_id)?);
+        }
         terminal.terminal.draw(|frame| draw(frame, &app))?;
-        if let Event::Key(key) = event::read()? {
-            if !key.is_press() {
-                continue;
+        let intent = match event::read()? {
+            Event::Key(key) if key.is_press() => app.handle_key(key),
+            Event::Mouse(mouse) => app.handle_mouse(mouse, terminal.terminal.get_frame().area()),
+            Event::Paste(text) => {
+                app.handle_paste(&text);
+                Intent::None
             }
-            match app.handle_key(key) {
-                Intent::None => {}
-                Intent::Accept(command) => return Ok(Some(command)),
-                Intent::Cancel => return Ok(None),
-                Intent::LoadDetails(command_id) => {
-                    app.show_details(store.entries_for_command(command_id)?);
+            _ => Intent::None,
+        };
+        match intent {
+            Intent::None => {}
+            Intent::Accept(command) => return Ok(Some(command)),
+            Intent::Cancel => return Ok(None),
+            Intent::LoadDetails(command_id) => {
+                app.show_details(store.entries_for_command(command_id)?);
+            }
+            Intent::Mutate(mutation) => {
+                match mutation {
+                    Mutation::DeleteEntry(entry_id) => store.delete_entry(entry_id)?,
+                    Mutation::ForgetCommand(command_id) => store.forget_command(command_id)?,
+                    Mutation::Clear => store.clear()?,
                 }
-                Intent::Mutate(mutation) => {
-                    match mutation {
-                        Mutation::DeleteEntry(entry_id) => store.delete_entry(entry_id)?,
-                        Mutation::ForgetCommand(command_id) => store.forget_command(command_id)?,
-                        Mutation::Clear => store.clear()?,
-                    }
-                    app.set_candidates(store.search_candidates(&cwd)?);
-                }
+                app.set_candidates(store.search_candidates(&cwd)?);
             }
         }
     }
@@ -331,178 +636,36 @@ struct TuiTerminal<W: Write> {
 
 impl<W: Write> TuiTerminal<W> {
     fn enter(writer: W) -> Result<Self> {
+        let terminal = Terminal::new(CrosstermBackend::new(writer))?;
         enable_raw_mode().map_err(|error| {
             Error::Io(io::Error::new(
                 error.kind(),
                 format!("could not enable terminal raw mode: {error}"),
             ))
         })?;
-        let mut writer = writer;
-        if let Err(error) = execute!(writer, EnterAlternateScreen) {
-            let _ = disable_raw_mode();
-            return Err(Error::Io(io::Error::new(
-                error.kind(),
-                format!("could not enter alternate screen: {error}"),
-            )));
-        }
-        let terminal = Terminal::new(CrosstermBackend::new(writer)).map_err(|error| {
-            Error::Io(io::Error::new(
-                error.kind(),
-                format!("could not initialize terminal: {error}"),
-            ))
-        })?;
-        Ok(Self { terminal })
+        let mut session = Self { terminal };
+        execute!(
+            session.terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )?;
+        session.terminal.hide_cursor()?;
+        Ok(session)
     }
 }
 
 impl<W: Write> Drop for TuiTerminal<W> {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
-}
-
-fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(3),
-            Constraint::Length(1),
-        ])
-        .split(frame.area());
-
-    let scope = if app.current_dir_only {
-        "current directory"
-    } else {
-        "global"
-    };
-    let input = Paragraph::new(app.query.as_str())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" fmn history · {scope} ")),
-        )
-        .style(Style::default().fg(Color::Cyan));
-    frame.render_widget(input, areas[0]);
-
-    match &app.view {
-        View::Details => draw_details(frame, areas[1], app),
-        View::Help => draw_help(frame, areas[1]),
-        View::Manage => draw_manage(frame, areas[1], app),
-        View::Confirm { mutation, input } => {
-            let expected = mutation_confirmation(mutation);
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from(format!("This action is permanent: {mutation:?}")),
-                    Line::from(format!("Type {expected} and press Enter: {input}")),
-                    Line::from("Escape cancels."),
-                ])
-                .block(Block::default().borders(Borders::ALL).title(" Confirm "))
-                .wrap(Wrap { trim: false }),
-                areas[1],
-            );
-        }
-        View::Main => draw_candidates(frame, areas[1], app),
-    }
-
-    frame.render_widget(
-        Line::from(vec![
-            Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" insert  "),
-            Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" scope  "),
-            Span::styled("F2", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" details  "),
-            Span::styled("Ctrl-X", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" manage  "),
-            Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("/Ctrl-C cancel"),
-        ]),
-        areas[2],
-    );
-}
-
-fn draw_candidates(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, app: &App) {
-    let visible = visible_range(
-        app.selected,
-        app.ranked.len(),
-        area.height.saturating_sub(2),
-    );
-    let items: Vec<_> = app.ranked[visible.clone()]
-        .iter()
-        .map(|ranked| {
-            let candidate = &app.candidates[ranked.index];
-            let status = match candidate.latest_exit_code {
-                Some(0) => "✓",
-                Some(_) => "✗",
-                None => "·",
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{status} "), Style::default().fg(Color::DarkGray)),
-                Span::raw(candidate.command.replace('\n', " ↵ ")),
-                Span::styled(
-                    format!("  ×{}  {}", candidate.use_count, candidate.latest_cwd),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]))
-        })
-        .collect();
-    let mut state = ListState::default()
-        .with_selected((!items.is_empty()).then_some(app.selected - visible.start));
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" {} matches ", app.ranked.len())),
-            )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("› "),
-        area,
-        &mut state,
-    );
-}
-
-fn draw_details(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, app: &App) {
-    let visible = visible_range(
-        app.detail_selected,
-        app.details.len(),
-        area.height.saturating_sub(2),
-    );
-    let items: Vec<_> = app.details[visible.clone()]
-        .iter()
-        .map(|entry| {
-            ListItem::new(format!(
-                "{}  {}  exit={}  {}",
-                entry.started_at,
-                entry.cwd,
-                entry
-                    .exit_code
-                    .map_or_else(|| "?".into(), |code| code.to_string()),
-                entry.shell
-            ))
-        })
-        .collect();
-    let mut state = ListState::default()
-        .with_selected((!items.is_empty()).then_some(app.detail_selected - visible.start));
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Occurrences "),
-            )
-            .highlight_style(Style::default().bg(Color::DarkGray))
-            .highlight_symbol("› "),
-        area,
-        &mut state,
-    );
 }
 
 fn visible_range(selected: usize, length: usize, height: u16) -> std::ops::Range<usize> {
@@ -510,33 +673,6 @@ fn visible_range(selected: usize, length: usize, height: u16) -> std::ops::Range
         .min(length.saturating_sub(1))
         .saturating_sub(usize::from(height).saturating_sub(1));
     start..length.min(start + usize::from(height))
-}
-
-fn draw_help(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect) {
-    frame.render_widget(
-        Paragraph::new(
-            "Type to fuzzy-search. Enter inserts without executing. Tab toggles directory scope.\n\
-             F2 shows occurrences. Ctrl-X opens management. Escape cancels.",
-        )
-        .block(Block::default().borders(Borders::ALL).title(" Help "))
-        .wrap(Wrap { trim: true }),
-        area,
-    );
-}
-
-fn draw_manage(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, app: &App) {
-    let delete = if app.selected_detail().is_none() {
-        ""
-    } else {
-        "d delete selected occurrence\n"
-    };
-    frame.render_widget(
-        Paragraph::new(format!(
-            "i inspect occurrences\n{delete}f forget selected command everywhere\nc clear all history\nEsc cancel"
-        ))
-        .block(Block::default().borders(Borders::ALL).title(" Manage ")),
-        area,
-    );
 }
 
 fn mutation_confirmation(mutation: &Mutation) -> &'static str {
@@ -850,10 +986,13 @@ mod tests {
         app.handle_key(key(KeyCode::Char('x')));
         app.handle_key(key(KeyCode::Backspace));
         app.handle_key(key(KeyCode::Esc));
-        assert_eq!(app.view, View::Main);
+        assert_eq!(app.view, View::Details);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
-        assert_eq!(app.handle_key(key(KeyCode::Enter)), Intent::LoadDetails(7));
+        assert_eq!(
+            app.handle_key(key(KeyCode::Char('i'))),
+            Intent::LoadDetails(7)
+        );
         app.show_details(vec![]);
         assert_eq!(app.handle_key(key(KeyCode::Left)), Intent::None);
         assert_eq!(app.view, View::Main);
@@ -888,5 +1027,163 @@ mod tests {
         terminal.draw(|frame| draw(frame, &app)).unwrap();
         app.handle_key(key(KeyCode::Char('c')));
         terminal.draw(|frame| draw(frame, &app)).unwrap();
+    }
+
+    fn entry(id: i64, command_id: i64) -> Entry {
+        Entry {
+            id,
+            command_id,
+            command: "cargo test".into(),
+            started_at: 1,
+            finished_at: Some(1_801),
+            duration_ms: Some(1_800),
+            exit_code: Some(0),
+            cwd: "/work/fmn".into(),
+            shell: "zsh".into(),
+            session_id: "seed".into(),
+            source: "live".into(),
+        }
+    }
+
+    #[test]
+    fn live_preview_is_bounded_and_cannot_enable_occurrence_deletion() {
+        let mut app = App::new(
+            vec![candidate(1, "cargo test", 1), candidate(2, "git status", 1)],
+            String::new(),
+            1,
+        );
+        app.set_preview(1, (0..8).map(|id| entry(id, 1)).collect());
+        assert_eq!(app.preview.len(), 3);
+        assert_eq!(app.view, View::Main);
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        app.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(app.view, View::Manage);
+        app.handle_key(key(KeyCode::Esc));
+        app.handle_key(key(KeyCode::Down));
+        app.set_preview(1, vec![entry(20, 1)]);
+        assert_eq!(app.preview_command_id, Some(1));
+        app.set_preview(2, vec![entry(21, 1), entry(22, 2)]);
+        assert_eq!(app.preview_command_id, Some(2));
+        assert_eq!(app.preview.len(), 1);
+        assert_eq!(app.preview[0].id, 22);
+    }
+
+    #[test]
+    fn search_cursor_edits_unicode_and_paste_cannot_activate_actions() {
+        let mut app = App::new(vec![], "a👩‍💻e\u{301}中".into(), 1);
+        app.handle_key(key(KeyCode::Left));
+        app.handle_key(key(KeyCode::Backspace));
+        assert_eq!(app.query, "a👩‍💻中");
+        app.handle_key(key(KeyCode::Home));
+        app.handle_key(key(KeyCode::Delete));
+        assert_eq!(app.query, "👩‍💻中");
+        app.handle_key(key(KeyCode::End));
+        app.handle_paste("\nfoo\x1b\r\tbar");
+        assert_eq!(app.query, "👩‍💻中 foo  bar");
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(app.query.is_empty());
+        assert_eq!(app.cursor, 0);
+        app.open_overlay(View::Manage);
+        app.handle_paste("clear");
+        assert_eq!(app.view, View::Manage);
+        assert!(app.query.is_empty());
+    }
+
+    #[test]
+    fn actions_insert_and_theme_preview_can_be_cancelled_or_applied() {
+        use crate::config::Theme;
+
+        let mut app = App::new(vec![candidate(1, "cargo test", 1)], String::new(), 1);
+        app.open_overlay(View::Manage);
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Intent::Accept("cargo test".into())
+        );
+        app.handle_key(key(KeyCode::Char('t')));
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.theme, Theme::Rose);
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.theme, Theme::Mint);
+        assert_eq!(app.view, View::Main);
+        app.handle_key(key(KeyCode::F(3)));
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.theme, Theme::Rose);
+        assert_eq!(app.view, View::Main);
+        app.handle_key(key(KeyCode::F(4)));
+        assert!(!app.show_inspector);
+    }
+
+    #[test]
+    fn mouse_uses_rendered_rows_and_overlays_isolate_the_background() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::layout::Rect;
+
+        let mut app = App::new(
+            (0..30)
+                .map(|id| candidate(id, &format!("command-{id:02}"), 1))
+                .collect(),
+            String::new(),
+            1,
+        );
+        let area = Rect::new(0, 0, 120, 40);
+        let layout = super::render::geometry(area, true);
+        let (rows, height) = super::render::candidate_rows(layout.results);
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rows.x + 3,
+            row: rows.y + height * 2 + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse(click, area);
+        assert_eq!(app.selected, 2);
+        app.open_overlay(View::Manage);
+        app.handle_mouse(click, area);
+        assert_eq!(app.selected, 2);
+        let menu = super::render::menu_rows(area, &app);
+        let result = app.handle_mouse(
+            MouseEvent {
+                column: menu.x,
+                row: menu.y,
+                ..click
+            },
+            area,
+        );
+        assert_eq!(result, Intent::Accept("command-02".into()));
+    }
+
+    #[test]
+    fn every_overlay_renders_at_small_and_large_sizes_without_leaking_state() {
+        for (width, height) in [
+            (0, 0),
+            (1, 1),
+            (20, 7),
+            (40, 12),
+            (80, 24),
+            (80, 40),
+            (120, 40),
+        ] {
+            let mut app = App::new(
+                vec![candidate(1, "printf 'hello 世界'\nnext\x1b[31m", 1)],
+                "世".repeat(100),
+                1,
+            );
+            app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for view in [
+                View::Main,
+                View::Details,
+                View::Help,
+                View::Manage,
+                View::Themes,
+                View::Confirm {
+                    mutation: Mutation::Clear,
+                    input: "clear".into(),
+                },
+            ] {
+                app.view = view;
+                terminal.draw(|frame| draw(frame, &app)).unwrap();
+            }
+        }
     }
 }

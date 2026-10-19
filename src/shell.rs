@@ -1,5 +1,9 @@
 use crate::model::Shell;
 
+// Internal widget protocol: 0 inserts, 10 executes, 1 cancels, 2 reports an error.
+// Command bytes are returned separately and are never interpreted as this signal.
+pub const EXECUTE_SELECTION_EXIT_CODE: u8 = 10;
+
 pub fn init_script(shell: Shell) -> &'static str {
     match shell {
         Shell::Fish => FISH_INIT,
@@ -31,13 +35,19 @@ if status is-interactive; and not set -q __fmn_initialized
     end
 
     function __fmn_search
-        set -l __fmn_result "$(command fmn search --query (commandline) --cwd "$PWD")"
+        set -l __fmn_result "$(command fmn search --query (commandline) --cwd "$PWD" \
+            --shell-integration 3>&1 1>&2 2>&3 0<&1 3>&-)"
         set -l __fmn_search_status $status
-        if test $__fmn_search_status -eq 0
+        if test $__fmn_search_status -eq 0; or test $__fmn_search_status -eq 10
             commandline --replace -- "$__fmn_result"
             commandline --cursor (string length -- "$__fmn_result")
+        else if test -n "$__fmn_result"
+            printf '%s\n' "$__fmn_result" >&2
         end
         commandline -f repaint
+        if test $__fmn_search_status -eq 10
+            commandline -f execute
+        end
     end
     bind \cr __fmn_search
     bind -M insert \cr __fmn_search
@@ -75,17 +85,20 @@ if [[ -o interactive && -z ${__FMN_INITIALIZED-} ]]; then
 
     __fmn_search_widget() {
         local __fmn_result
+        local __fmn_search_status=0
         zle -I
         __fmn_result="$(command fmn search --query "$BUFFER" --cwd "$PWD" \
-            --shell-integration 3>&1 1>&2 2>&3 0<&1 3>&-)"
-        local __fmn_search_status=$?
-        if (( __fmn_search_status == 0 )); then
+            --shell-integration 3>&1 1>&2 2>&3 0<&1 3>&-)" || __fmn_search_status=$?
+        if (( __fmn_search_status == 0 || __fmn_search_status == 10 )); then
             BUFFER="$__fmn_result"
             CURSOR=${#BUFFER}
         elif [[ -n "$__fmn_result" ]]; then
             print -r -- "$__fmn_result" >&2
         fi
         zle reset-prompt
+        if (( __fmn_search_status == 10 )); then
+            zle accept-line
+        fi
     }
     zle -N __fmn_search_widget
     bindkey '^R' __fmn_search_widget
@@ -152,19 +165,22 @@ if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
 
     __fmn_search_widget() {
         local __fmn_result
-        if (( BASH_VERSINFO[0] < 4 )); then
-            bind -m emacs-standard '"\C-x\C-g":""'
-        fi
-        __fmn_result="$(command fmn search --query "$READLINE_LINE" --cwd "$PWD")"
-        local __fmn_search_status=$?
-        if [[ $__fmn_search_status -eq 0 ]]; then
+        local __fmn_search_status=0
+        # Reset queued input and acceptance before every search, including
+        # cancellation and config errors after an earlier auto-execution.
+        bind -m emacs-standard '"\C-x\C-g":""'
+        bind -m emacs-standard '"\C-x\C-h":""'
+        bind -m vi-insert '"\C-x\C-h":""'
+        __fmn_result="$(command fmn search --query "$READLINE_LINE" --cwd "$PWD" \
+            --shell-integration 3>&1 1>&2 2>&3 0<&1 3>&-)" || __fmn_search_status=$?
+        if [[ $__fmn_search_status -eq 0 || $__fmn_search_status -eq 10 ]]; then
             if (( BASH_VERSINFO[0] >= 4 )); then
                 READLINE_LINE="$__fmn_result"
                 READLINE_POINT=${#READLINE_LINE}
             else
                 # Bash 3 has no writable READLINE_LINE. Queue a literal-input
                 # macro after this widget, quoting control bytes so selection
-                # never accepts a line or invokes another Readline binding.
+                # cannot accept a line or invoke another Readline binding.
                 local LC_ALL=C
                 local __fmn_macro='\C-e\C-u' __fmn_byte __fmn_octal __fmn_index
                 for ((__fmn_index=0; __fmn_index<${#__fmn_result}; __fmn_index++)); do
@@ -177,6 +193,12 @@ if [[ $- == *i* && -z ${__FMN_INITIALIZED-} ]]; then
                 done
                 bind -m emacs-standard '"\C-x\C-g":"'"$__fmn_macro"'"'
             fi
+            if [[ $__fmn_search_status -eq 10 ]]; then
+                bind -m emacs-standard '"\C-x\C-h":"\C-m"'
+                bind -m vi-insert '"\C-x\C-h":"\C-m"'
+            fi
+        elif [[ -n $__fmn_result ]]; then
+            printf '%s\n' "$__fmn_result" >&2
         fi
     }
 
@@ -206,17 +228,16 @@ __fmn_prompt_end"
     else
         PROMPT_COMMAND='__fmn_precmd; __fmn_prompt_end'
     fi
-    if (( BASH_VERSINFO[0] < 4 )); then
-        bind -m emacs-standard -x '"\C-x\C-r":__fmn_search_widget'
-        bind -m emacs-standard '"\C-x\C-g":""'
-        bind -m emacs-standard '"\C-r":"\C-x\C-r\C-x\C-g"'
-        bind -m vi-insert '"\C-x\C-]":emacs-editing-mode'
-        bind -m emacs-standard '"\C-x\C-]":vi-editing-mode'
-        bind -m vi-insert '"\C-r":"\C-x\C-]\C-r\C-x\C-]"'
-    else
-        bind -x '"\C-r":__fmn_search_widget'
-        bind -m vi-insert -x '"\C-r":__fmn_search_widget'
-    fi
+    # Accept only after the widget returns and the original editing mode is
+    # restored. Bash 3 also inserts through a literal-input macro here.
+    bind -m emacs-standard -x '"\C-x\C-r":__fmn_search_widget'
+    bind -m emacs-standard '"\C-x\C-g":""'
+    bind -m emacs-standard '"\C-x\C-h":""'
+    bind -m vi-insert '"\C-x\C-h":""'
+    bind -m emacs-standard '"\C-r":"\C-x\C-r\C-x\C-g\C-x\C-h"'
+    bind -m vi-insert '"\C-x\C-]":emacs-editing-mode'
+    bind -m emacs-standard '"\C-x\C-]":vi-editing-mode'
+    bind -m vi-insert '"\C-r":"\C-x\C-]\C-x\C-r\C-x\C-g\C-x\C-]\C-x\C-h"'
 fi
 "#;
 
@@ -266,11 +287,14 @@ mod tests {
     }
 
     #[test]
-    fn every_script_binds_ctrl_r_without_executing_selection() {
+    fn every_script_binds_ctrl_r_and_checks_the_selection_protocol() {
         for shell in [Shell::Fish, Shell::Zsh, Shell::Bash] {
             let script = init_script(shell);
             assert!(script.contains("fmn search --query"));
             assert!(script.contains("__fmn_search"));
+            assert!(script.contains("--shell-integration"));
+            assert!(script.contains("__fmn_search_status"));
+            assert!(script.contains(&super::EXECUTE_SELECTION_EXIT_CODE.to_string()));
         }
         assert!(init_script(Shell::Fish).contains("commandline --replace"));
         assert!(init_script(Shell::Zsh).contains("BUFFER=\"$__fmn_result\""));

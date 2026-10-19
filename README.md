@@ -15,6 +15,8 @@ database before testing pre-release upgrades.
 - Fish, Zsh, and Bash capture with command, working directory, exit code,
   duration, shell, and session metadata
 - fuzzy Ctrl-R search with global or current-directory scope
+- Focus interface with match highlighting, a live command inspector, colour
+  themes, mouse selection, and centred action/help dialogs
 - repeated-command aggregation while preserving individual occurrences
 - delete one occurrence, forget a command everywhere, or clear all history
 - idempotent import of native Fish, Zsh, and Bash history files and Atuin's
@@ -57,23 +59,57 @@ eval "$(fmn init zsh)"
 eval "$(fmn init bash)"
 ```
 
-Restart the shell. `Ctrl-R` now opens `fmn`; accepting a selection inserts it
-into the command line without executing it.
+Restart the shell. `Ctrl-R` now opens `fmn`; by default, accepting a selection
+inserts it into the command line without executing it.
 
 ## Use
 
 The TUI starts from `Ctrl-R` or `fmn search`.
 
+Focus keeps search results beside an inspector with the selected command,
+execution metadata, and recent occurrences. In tall, narrow terminals the
+inspector moves below the results; small terminals prioritise the result list.
+
 | Key | Action |
 | --- | --- |
 | Type / Backspace | refine the fuzzy query |
+| Left / Right, Home / End | move the search cursor |
+| Ctrl-U | clear the query |
 | Up / Down, Ctrl-P / Ctrl-N | move selection |
-| Enter | insert selection without running it |
+| Enter | insert selection; run immediately if explicitly configured |
 | Tab | toggle global/current-directory scope |
 | F2 | inspect individual occurrences |
+| F3 | preview and choose a colour theme |
+| F4 | show/hide the inspector |
 | Ctrl-X | open management actions |
 | F1 | show help |
 | Escape | cancel |
+| Click / mouse wheel | select / scroll results or occurrences |
+
+In the actions menu, use Up/Down and Enter, or `i` to inspect, `t` for themes,
+`f` to forget a command, and `c` to clear history. While inspecting occurrences,
+`d` deletes the selected occurrence. Removal requires typing the confirmation
+word. Escape closes a dialog and returns to the previous view.
+
+Mint is the default dark palette; Rose and Iris provide alternatives. Terminal
+uses your terminal's background and ANSI colours, and No colour uses symbols
+and reverse video. Theme choices made with F3 apply to the current search.
+Set `[ui].theme` in the config file for a persistent default. A nonempty
+`NO_COLOR` starts with No colour.
+
+To run accepted Ctrl-R selections immediately, opt in through the config file:
+
+```toml
+[ui]
+execute_on_select = true
+```
+
+This defaults to `false`. When enabled, Enter and the first action-menu item
+show **run** and execute the selection in the current Fish, Zsh, or Bash shell.
+The setting is read on each search, so changes take effect without restarting.
+Escape and errors never execute a selection. Standalone `fmn search` continues
+to print the selected command. After upgrading fmn, restart your shell once to
+load the updated integration.
 
 Other useful commands:
 
@@ -122,6 +158,11 @@ The optional TOML configuration file supports:
 [history]
 ignore_leading_space = true
 ignore_patterns = ["password *", "secret-tool *"]
+
+[ui]
+theme = "mint" # mint, rose, iris, terminal, or no-color
+show_inspector = true
+execute_on_select = false
 ```
 
 Filters apply to live capture and imports. History remains entirely local;
