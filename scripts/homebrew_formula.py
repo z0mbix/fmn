@@ -61,7 +61,6 @@ def homebrew_formula(tag, directory):
 class Fmn < Formula
   desc "Local-first shell history manager for Fish, Zsh, and Bash"
   homepage "https://github.com/z0mbix/fmn"
-  version "{version}"
   license "MIT"
 
 {platform_blocks}

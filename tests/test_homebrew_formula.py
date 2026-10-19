@@ -28,7 +28,8 @@ class HomebrewFormulaTests(unittest.TestCase):
 
     def test_formula_pins_every_platform_and_checksums(self):
         formula = homebrew_formula("v0.1.0", self.directory)
-        self.assertIn('version "0.1.0"', formula)
+        self.assertIn('assert_equal "fmn 0.1.0"', formula)
+        self.assertNotIn('  version "', formula)
         self.assertIn('license "MIT"', formula)
         self.assertIn('system bin/"fmn", "doctor"', formula)
         self.assertEqual(formula.count("sha256 "), 4)
