@@ -9,3 +9,4 @@
 *.profraw
 /coverage/
 /mutants.out/
+__pycache__/

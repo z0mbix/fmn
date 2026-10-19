@@ -6,7 +6,7 @@ All notable changes to this project will be documented here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-25
+## [0.1.0] - 2026-10-19
 
 ### Added
 
@@ -16,6 +16,9 @@ All notable changes to this project will be documented here. The format follows
 - privacy filters, diagnostics, and private bounded logs
 - unit, CLI, property, concurrency, PTY, fuzz, mutation, and benchmark suites
 - cross-platform CI and release automation
+- Focus interface with colour themes, command inspector, mouse support, and dialogs
+- optional immediate command execution through shell integration (off by default)
+- verified macOS and Linux binaries published to `z0mbix/homebrew-tap`
 
 [Unreleased]: https://github.com/z0mbix/fmn/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/z0mbix/fmn/releases/tag/v0.1.0

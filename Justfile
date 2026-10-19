@@ -17,7 +17,10 @@ build:
 test:
     cargo test --all-targets --all-features
 
-check: fmt lint test
+test-release:
+    python3 -m unittest discover -s tests -p 'test_homebrew_formula.py'
+
+check: fmt lint test test-release
 
 shellcheck:
     cargo run --quiet -- init bash | shellcheck -s bash -

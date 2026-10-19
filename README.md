@@ -7,8 +7,8 @@ fast full-screen Ctrl-R search without accounts, sync, or a background service.
 ## Status
 
 The core utility is implemented and tested on macOS and Linux. Version 0.1.0 is
-the initial pre-release; database migrations are automatic, but back up your
-database before testing pre-release upgrades.
+the initial release; database migrations are automatic, but back up your
+database before upgrades.
 
 ## Features
 
@@ -27,6 +27,12 @@ database before testing pre-release upgrades.
 - diagnostics through `fmn doctor`, with bounded private diagnostic logs
 
 ## Install
+
+Install with Homebrew on macOS or Linux:
+
+```sh
+brew install z0mbix/tap/fmn
+```
 
 Build from source with Rust 1.88 or newer:
 

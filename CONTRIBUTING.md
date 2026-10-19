@@ -2,7 +2,7 @@
 
 ## Setup
 
-Install stable Rust, `just`, Fish, Zsh, Bash, `expect`, and ShellCheck. Then run:
+Install stable Rust, Python 3, `just`, Fish, Zsh, Bash, `expect`, and ShellCheck. Then run:
 
 ```sh
 just check
@@ -37,3 +37,14 @@ regression signals rather than hard timing gates because hosts differ.
 
 The generated release workflow is owned by `dist-workspace.toml`; regenerate it
 with pinned dist 0.31.0 after changing release configuration.
+
+Release tags run the full release checks before building. Each packaged binary
+is checksum-verified and runs `--version` and `doctor` on its native macOS or
+Linux architecture before the GitHub release is published.
+
+Stable releases then update `Formula/fmn.rb` in `z0mbix/homebrew-tap`. The
+publisher downloads the public archives and verifies all four SHA-256 hashes
+before generating the formula. It uses a dedicated write-enabled deploy key
+for the tap, stored here as the `HOMEBREW_TAP_SSH_KEY` Actions secret. Prereleases
+leave the tap on the latest stable version. To retry tap publication for an
+existing release, run the **Publish Homebrew formula** workflow with its tag.
