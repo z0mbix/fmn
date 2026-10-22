@@ -1,0 +1,8 @@
+Pink Lemonade / Casseopeian Light Pink for Visual Studio Code
+Author/publisher: Casseopeian (gbmyt, formerly carnaluna)
+Source: https://github.com/gbmyt/pinkvscodetheme/tree/e620f7ac095092c8236181630a00d6e064ceb5f2
+
+The upstream repository and package metadata supply no explicit license.
+Only palette values are referenced and adapted for terminal readability in
+kqt; no extension code, artwork, or other assets are included. This notice
+records attribution and does not assert a license grant from the author.

@@ -14,6 +14,17 @@ ranking, privacy, and TUI-state changes should normally include property or
 table-driven tests. Shell changes must keep the syntax and PTY suites green.
 Schema changes require an append-only migration and upgrade tests.
 
+Terminal lifecycle changes must keep the recovery suite green:
+
+```sh
+cargo test --test terminal_recovery
+cargo test --lib tui::terminal
+```
+
+These tests use isolated PTYs to check terminal settings, cursor visibility,
+alternate screen, mouse capture, and bracketed paste after shutdown signals
+and panic unwinding. They run as part of `just check` on macOS and Linux.
+
 ## Extended verification
 
 Install the optional tools:

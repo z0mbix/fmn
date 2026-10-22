@@ -19,7 +19,7 @@ fuzz_target!(|data: &[u8]| {
     };
     let mut app = App::new(vec![candidate], String::new(), 1);
     for byte in data {
-        let key = match byte % 8 {
+        let key = match byte % 16 {
             0 => KeyEvent::new(KeyCode::Char(char::from(*byte)), KeyModifiers::NONE),
             1 => KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
             2 => KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -27,9 +27,16 @@ fuzz_target!(|data: &[u8]| {
             4 => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
             5 => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
             6 => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            _ => KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            7 => KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            8 => KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            9 => KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            10 => KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            11 => KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+            12 => KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            13 => KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            14 => KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            _ => KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         };
         let _ = app.handle_key(key);
     }
 });
-

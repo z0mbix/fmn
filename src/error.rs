@@ -13,6 +13,11 @@ pub enum Error {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error("could not save configuration to {path}: {source}")]
+    SaveConfig {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("invalid ignore pattern {pattern:?}: {source}")]
     InvalidIgnorePattern {
         pattern: String,

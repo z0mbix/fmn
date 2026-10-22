@@ -20,6 +20,8 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# Retain the upstream palette notices in binary releases as well as the source.
+include = ["src/tui/THEMES.md", "src/tui/licenses"]
 # Produce GitHub provenance attestations for release artifacts
 github-attestations = true
 

@@ -68,6 +68,8 @@ class Fmn < Formula
   def install
     bin.install "fmn"
     doc.install "README.md"
+    doc.install "THEMES.md" if File.exist?("THEMES.md")
+    doc.install "licenses" if Dir.exist?("licenses")
   end
 
   test do

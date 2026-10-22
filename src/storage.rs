@@ -7,6 +7,8 @@ use crate::import::ImportedRecord;
 use crate::model::{CommandSummary, Entry, SearchCandidate, Shell};
 use crate::{Error, Result};
 
+mod reports;
+
 pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 const WRITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);

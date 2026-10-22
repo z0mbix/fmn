@@ -12,6 +12,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::theme::{Palette, THEMES};
 use super::{Action, App, Mutation, View, mutation_confirmation, visible_range};
+use crate::keybindings::KeyAction;
 
 pub(super) struct Geometry {
     header: Rect,
@@ -65,7 +66,7 @@ pub(super) fn candidate_rows(area: Rect) -> (Rect, u16) {
     (rows, height)
 }
 
-fn popup(area: Rect, width: u16, height: u16) -> Rect {
+pub(super) fn popup(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width.saturating_sub(2).max(1));
     let height = height.min(area.height.saturating_sub(2).max(1));
     Rect::new(
@@ -113,6 +114,22 @@ pub(super) fn menu_rows(area: Rect, app: &App) -> Rect {
     )
 }
 
+pub(super) fn theme_range(area: Rect, app: &App) -> std::ops::Range<usize> {
+    visible_range(
+        app.theme_index(),
+        app.theme_picker.matches.len(),
+        menu_rows(area, app).height,
+    )
+}
+
+pub(super) fn action_range(area: Rect, app: &App) -> std::ops::Range<usize> {
+    visible_range(
+        app.action_selected,
+        app.actions().len(),
+        menu_rows(area, app).height,
+    )
+}
+
 pub(super) fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
     let palette = Palette::new(app.theme);
@@ -129,11 +146,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &App) {
         let layout = geometry(area, app.show_inspector);
         draw_header(frame, layout.header, app, palette);
         draw_search(frame, layout.search, app, palette);
-        let scope = if app.current_dir_only {
-            "◉ This directory"
-        } else {
-            "◉ All directories"
-        };
+        let scope = format!("◉ {}", app.scope.label());
         line(
             frame,
             layout.scope,
@@ -177,6 +190,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &App) {
                 View::Help => draw_help(frame, app, palette),
                 View::Manage => draw_manage(frame, app, palette),
                 View::Themes => draw_themes(frame, app, palette),
+                View::Stats => super::dashboard::draw_stats(frame, app, palette),
+                View::Settings => super::dashboard::draw_settings(frame, app, palette),
+                View::Keybindings => super::bindings::draw(frame, app, palette),
                 View::Confirm { mutation, input } => {
                     draw_confirm(frame, app, mutation, input, palette)
                 }
@@ -213,11 +229,18 @@ fn draw_small(frame: &mut Frame<'_>, area: Rect, app: &App, palette: Palette) {
             frame,
             row(area, area.height - 1),
             vec![Span::styled(
-                if app.execute_on_select {
-                    "↵ run  F2 details  esc cancel"
-                } else {
-                    "↵ insert  F2 details  esc cancel"
-                },
+                format!(
+                    "↵ {}  {} details  esc cancel",
+                    if app.execute_on_select {
+                        "run"
+                    } else {
+                        "insert"
+                    },
+                    app.preferences
+                        .keybindings
+                        .get(KeyAction::Details)
+                        .short_label()
+                ),
                 Style::default().fg(palette.muted),
             )],
         );
@@ -292,10 +315,14 @@ fn draw_search(frame: &mut Frame<'_>, area: Rect, app: &App, palette: Palette) {
 }
 
 fn search_window(app: &App, width: u16) -> (String, u16) {
+    text_window(&app.query, app.cursor, width)
+}
+
+fn text_window(query: &str, cursor: usize, width: u16) -> (String, u16) {
     let max = usize::from(width.saturating_sub(1));
     let mut start = 0;
-    let mut before = display_text(&app.query[..app.cursor], false).width();
-    for (index, grapheme) in app.query[..app.cursor].grapheme_indices(true) {
+    let mut before = display_text(&query[..cursor], false).width();
+    for (index, grapheme) in query[..cursor].grapheme_indices(true) {
         if before <= max {
             break;
         }
@@ -303,7 +330,7 @@ fn search_window(app: &App, width: u16) -> (String, u16) {
         start = index + grapheme.len();
     }
     (
-        fit(&display_text(&app.query[start..], false), width),
+        fit(&display_text(&query[start..], false), width),
         before.min(max) as u16,
     )
 }
@@ -350,6 +377,11 @@ fn draw_candidates(frame: &mut Frame<'_>, area: Rect, app: &App, palette: Palett
             palette.base()
         };
         frame.render_widget(Block::default().style(style), row_area);
+        let palette = if selected {
+            palette.selected_content()
+        } else {
+            palette
+        };
         line(
             frame,
             row_area,
@@ -457,7 +489,18 @@ fn draw_inspector(frame: &mut Frame<'_>, area: Rect, app: &App, palette: Palette
         )],
     );
     if inner.width >= 20 {
-        right_line(frame, inner, "F2 expand", palette.accent);
+        right_line(
+            frame,
+            inner,
+            &format!(
+                "{} expand",
+                app.preferences
+                    .keybindings
+                    .get(KeyAction::Details)
+                    .short_label()
+            ),
+            palette.accent,
+        );
     }
     let Some(candidate) = app.selected_candidate() else {
         line(
@@ -640,30 +683,61 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App, palette: Palette) {
     } else {
         " insert  "
     };
+    let scope_key = app
+        .preferences
+        .keybindings
+        .get(KeyAction::Scope)
+        .short_label();
+    let details_key = app
+        .preferences
+        .keybindings
+        .get(KeyAction::Details)
+        .short_label();
+    let actions_key = app
+        .preferences
+        .keybindings
+        .get(KeyAction::Actions)
+        .short_label();
+    let stats_key = app
+        .preferences
+        .keybindings
+        .get(KeyAction::Statistics)
+        .short_label();
+    let settings_key = app
+        .preferences
+        .keybindings
+        .get(KeyAction::Settings)
+        .short_label();
+    let help_key = app
+        .preferences
+        .keybindings
+        .get(KeyAction::Help)
+        .short_label();
     let items = if area.width >= 92 {
         vec![
             ("↑↓", " navigate  "),
             ("↵", accept),
-            ("Tab", " scope  "),
-            ("F2", " details  "),
-            ("^X", " actions  "),
-            ("F3", " theme  "),
-            ("F1", " help"),
+            (scope_key.as_str(), " scope  "),
+            (details_key.as_str(), " details  "),
+            (actions_key.as_str(), " actions  "),
+            (stats_key.as_str(), " stats  "),
+            (settings_key.as_str(), " settings  "),
+            (help_key.as_str(), " help"),
         ]
     } else if area.width >= 62 {
         vec![
             ("↑↓", " move  "),
             ("↵", accept),
-            ("Tab", " scope  "),
-            ("F2", " details  "),
-            ("^X", " actions  "),
-            ("F1", " help"),
+            (scope_key.as_str(), " scope  "),
+            (details_key.as_str(), " details  "),
+            (actions_key.as_str(), " actions  "),
+            (help_key.as_str(), " help"),
         ]
     } else {
         vec![
             ("↵", accept),
-            ("^X", " actions  "),
-            ("F1", " help  "),
+            (actions_key.as_str(), " actions  "),
+            (help_key.as_str(), " help  "),
             ("esc", " cancel"),
         ]
     };
@@ -723,6 +797,11 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, palette: Palette) {
         if selected {
             frame.render_widget(Block::default().style(palette.selection()), area);
         }
+        let palette = if selected {
+            palette.selected_content()
+        } else {
+            palette
+        };
         let (symbol, color) = exit_style(entry.exit_code, palette);
         line(
             frame,
@@ -760,41 +839,58 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, palette: Palette) {
         frame,
         row(inner, inner.height.saturating_sub(1)),
         vec![Span::styled(
-            if app.execute_on_select {
-                "↑↓ select · ↵ run · ^X actions · esc back"
-            } else {
-                "↑↓ select · ↵ insert · ^X actions · esc back"
-            },
+            format!(
+                "↑↓ select · ↵ {} · {} actions · esc back",
+                if app.execute_on_select {
+                    "run"
+                } else {
+                    "insert"
+                },
+                app.preferences
+                    .keybindings
+                    .get(KeyAction::Actions)
+                    .short_label()
+            ),
             Style::default().fg(palette.muted),
         )],
     );
 }
 
 fn draw_help(frame: &mut Frame<'_>, app: &App, palette: Palette) {
-    let area = popup(frame.area(), 64, 18);
+    let area = popup(frame.area(), 70, 21);
     dialog(frame, area, " Help ", palette);
     let inner = area.inner(Margin::new(2, 1));
-    let text = [
-        ("Type", "Fuzzy-search command history"),
-        ("← → / Home End", "Move the search cursor"),
-        ("Ctrl-U", "Clear the query"),
-        ("↑ ↓ / Ctrl-P N", "Select a command"),
+    let keys = app.preferences.keybindings;
+    let mut text = vec![
+        ("Type".into(), "Fuzzy-search command history"),
+        ("← → / Home End".into(), "Move the search cursor"),
+        ("Ctrl-U".into(), "Clear the query"),
+        ("↑ ↓ / Ctrl-P N".into(), "Select a command"),
         (
-            "Enter",
+            "Enter".into(),
             if app.execute_on_select {
                 "Run in the current shell"
             } else {
                 "Insert without executing"
             },
         ),
-        ("Tab", "Toggle directory scope"),
-        ("F2", "Inspect all occurrences"),
-        ("Ctrl-X", "Open command actions"),
-        ("F3", "Choose a colour theme"),
-        ("F4", "Toggle the inspector"),
-        ("Mouse", "Select results / scroll lists"),
-        ("Esc / Ctrl-C", "Close / cancel"),
     ];
+    for (action, label) in [
+        (KeyAction::Scope, "Cycle scope (Shift-Tab goes back)"),
+        (KeyAction::Details, "Inspect all occurrences"),
+        (KeyAction::Actions, "Open command actions"),
+        (KeyAction::Themes, "Search and preview colour themes"),
+        (KeyAction::Inspector, "Toggle the inspector"),
+        (KeyAction::Statistics, "History statistics"),
+        (KeyAction::Settings, "Settings and keybindings"),
+        (KeyAction::Help, "Show help"),
+    ] {
+        text.push((keys.get(action).to_string(), label));
+    }
+    text.extend([
+        ("Mouse".into(), "Select results / scroll lists"),
+        ("Esc / Ctrl-C".into(), "Close / cancel"),
+    ]);
     for (offset, (key, label)) in text.into_iter().enumerate() {
         line(
             frame,
@@ -832,10 +928,10 @@ fn draw_manage(frame: &mut Frame<'_>, app: &App, palette: Palette) {
         )],
     );
     let rows = menu_rows(frame.area(), app);
-    for (index, action) in app.actions().into_iter().enumerate() {
-        if index as u16 >= rows.height {
-            break;
-        }
+    let actions = app.actions();
+    let visible = action_range(frame.area(), app);
+    for (offset, index) in visible.enumerate() {
+        let action = actions[index];
         let (label, key, destructive) = match action {
             Action::Insert => (
                 if app.execute_on_select {
@@ -846,16 +942,22 @@ fn draw_manage(frame: &mut Frame<'_>, app: &App, palette: Palette) {
                 "↵",
                 false,
             ),
-            Action::Inspect => ("Inspect occurrences", "i / F2", false),
+            Action::Inspect => ("Inspect occurrences", "i", false),
             Action::Theme => ("Change colour theme", "t", false),
             Action::Delete => ("Delete selected occurrence", "d", true),
             Action::Forget => ("Forget command everywhere", "f", true),
-            Action::Clear => ("Clear all history", "c", true),
+            Action::Stats => ("History statistics", "g", false),
+            Action::Settings => ("Settings", "s", false),
         };
-        let area = row(rows, index as u16);
+        let area = row(rows, offset as u16);
         if index == app.action_selected {
             frame.render_widget(Block::default().style(palette.selection()), area);
         }
+        let palette = if index == app.action_selected {
+            palette.selected_content()
+        } else {
+            palette
+        };
         line(
             frame,
             area,
@@ -898,32 +1000,82 @@ fn draw_manage(frame: &mut Frame<'_>, app: &App, palette: Palette) {
 fn draw_themes(frame: &mut Frame<'_>, app: &App, palette: Palette) {
     let area = menu_area(frame.area(), app);
     dialog(frame, area, " Colour theme ", palette);
+    let search = Rect::new(area.x + 2, area.y + 2, area.width.saturating_sub(4), 1);
+    let prompt = "Filter › ";
     line(
         frame,
-        Rect::new(area.x + 2, area.y + 2, area.width.saturating_sub(4), 1),
-        vec![Span::styled(
-            "Preview a palette for this search",
-            Style::default().fg(palette.muted),
-        )],
+        search,
+        vec![Span::styled(prompt, Style::default().fg(palette.accent))],
     );
+    let input = Rect::new(
+        search.x + prompt.width() as u16,
+        search.y,
+        search.width.saturating_sub(prompt.width() as u16),
+        1,
+    );
+    let query = &app.theme_picker.query;
+    let (visible_query, cursor) = text_window(query, query.len(), input.width);
+    line(
+        frame,
+        input,
+        vec![if query.is_empty() {
+            Span::styled("type to find a theme", Style::default().fg(palette.muted))
+        } else {
+            Span::raw(visible_query)
+        }],
+    );
+    if input.width > 0 && area.height > 2 {
+        frame.set_cursor_position(Position::new(input.x + cursor, input.y));
+    }
     let rows = menu_rows(frame.area(), app);
-    for (index, (theme, name)) in THEMES.iter().enumerate() {
-        if index as u16 >= rows.height {
-            break;
-        }
-        let area = row(rows, index as u16);
-        if *theme == app.theme {
+    let visible = theme_range(frame.area(), app);
+    if app.theme_picker.matches.is_empty() {
+        line(
+            frame,
+            row(rows, 0),
+            vec![Span::styled(
+                "No matching themes",
+                Style::default().fg(palette.muted),
+            )],
+        );
+    }
+    for (offset, matched) in app.theme_picker.matches[visible].iter().enumerate() {
+        let (theme, name) = THEMES[matched.index];
+        let area = row(rows, offset as u16);
+        if theme == app.theme {
             frame.render_widget(Block::default().style(palette.selection()), area);
         }
+        let row_palette = if theme == app.theme {
+            palette.selected_content()
+        } else {
+            palette
+        };
         line(
             frame,
             area,
             vec![Span::styled(
-                format!("{} {name}", if *theme == app.theme { "›" } else { " " }),
-                Style::default().fg(palette.text),
+                if theme == app.theme { "› " } else { "  " },
+                Style::default().fg(row_palette.text),
             )],
         );
-        right_line(frame, area, "● ● ●", Palette::new(*theme).accent);
+        line(
+            frame,
+            Rect::new(area.x + 2, area.y, area.width.saturating_sub(10), 1),
+            highlighted(
+                name,
+                &matched.indices,
+                area.width.saturating_sub(10),
+                row_palette,
+            ),
+        );
+        let swatch = if app.theme == crate::config::Theme::NoColor {
+            palette.accent
+        } else if theme == app.theme {
+            row_palette.accent
+        } else {
+            Palette::new(theme).accent
+        };
+        right_line(frame, area, "● ● ●", swatch);
     }
     line(
         frame,
@@ -934,7 +1086,20 @@ fn draw_themes(frame: &mut Frame<'_>, app: &App, palette: Palette) {
             1,
         ),
         vec![Span::styled(
-            "↑↓ preview · ↵ choose · esc cancel",
+            format!(
+                "{}  {}/{}",
+                if area.width >= 48 {
+                    "↑↓ preview · ↵ save · ^U clear · esc"
+                } else {
+                    "↑↓ preview · ↵ · esc"
+                },
+                if app.theme_picker.matches.is_empty() {
+                    0
+                } else {
+                    app.theme_index() + 1
+                },
+                app.theme_picker.matches.len()
+            ),
             Style::default().fg(palette.muted),
         )],
     );
@@ -1020,7 +1185,7 @@ fn draw_confirm(
     }
 }
 
-fn dialog(frame: &mut Frame<'_>, area: Rect, title: &str, palette: Palette) {
+pub(super) fn dialog(frame: &mut Frame<'_>, area: Rect, title: &str, palette: Palette) {
     frame.render_widget(Clear, area);
     frame.render_widget(
         Block::bordered()
@@ -1047,7 +1212,7 @@ fn dim(frame: &mut Frame<'_>, palette: Palette) {
     );
 }
 
-fn row(area: Rect, offset: u16) -> Rect {
+pub(super) fn row(area: Rect, offset: u16) -> Rect {
     Rect::new(
         area.x,
         area.y.saturating_add(offset).min(area.bottom()),
@@ -1056,7 +1221,7 @@ fn row(area: Rect, offset: u16) -> Rect {
     )
 }
 
-fn line(frame: &mut Frame<'_>, area: Rect, spans: Vec<Span<'_>>) {
+pub(super) fn line(frame: &mut Frame<'_>, area: Rect, spans: Vec<Span<'_>>) {
     if area.height > 0 {
         frame.render_widget(Line::from(spans), Rect::new(area.x, area.y, area.width, 1));
     }
@@ -1081,7 +1246,7 @@ fn exit_style(code: Option<i32>, palette: Palette) -> (&'static str, ratatui::st
     }
 }
 
-fn display_text(text: &str, multiline: bool) -> String {
+pub(super) fn display_text(text: &str, multiline: bool) -> String {
     text.chars()
         .map(|character| match character {
             '\n' if multiline => "\n".into(),
@@ -1109,7 +1274,7 @@ fn short_path(path: &str, home: Option<&str>) -> String {
     display_text(&shortened, false)
 }
 
-fn fit(text: &str, width: u16) -> String {
+pub(super) fn fit(text: &str, width: u16) -> String {
     let width = usize::from(width);
     if text.width() <= width {
         return text.to_owned();
@@ -1140,7 +1305,7 @@ fn relative_time(timestamp: i64, now: i64) -> String {
     }
 }
 
-fn format_duration(duration: Option<i64>) -> String {
+pub(super) fn format_duration(duration: Option<i64>) -> String {
     match duration {
         None => "—".into(),
         Some(ms) if ms < 0 => "—".into(),
@@ -1204,6 +1369,195 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn every_theme_renders_main_and_overlays_at_supported_sizes() {
+        for (theme, name) in THEMES {
+            let mut app = app();
+            app.theme = theme;
+            app.details = app.preview.clone();
+            for (width, height) in [(40, 12), (80, 24), (120, 40)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                for view in [
+                    View::Main,
+                    View::Details,
+                    View::Help,
+                    View::Manage,
+                    View::Themes,
+                    View::Confirm {
+                        mutation: Mutation::Clear,
+                        input: "clear".into(),
+                    },
+                ] {
+                    app.view = view;
+                    terminal.draw(|frame| draw(frame, &app)).unwrap();
+                    assert!(!text(&terminal).is_empty(), "{name}");
+                    if app.view == View::Themes {
+                        let visible = theme_range(terminal.get_frame().area(), &app);
+                        assert!(visible.contains(&app.theme_index()), "{name}");
+                        let label = format!("› {name}");
+                        assert!(
+                            text(&terminal).contains(&label),
+                            "{name}: selected theme clipped"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn theme_filter_renders_matches_empty_results_and_a_visible_unicode_cursor() {
+        use ratatui::backend::Backend;
+
+        let mut app = app();
+        app.open_overlay(View::Themes);
+        app.handle_paste("RP-D");
+        for (width, height) in [(40, 12), (80, 24), (120, 40)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            let rendered = text(&terminal);
+            assert!(rendered.contains("Filter › RP-D"));
+            assert!(rendered.contains("› Rosé Pine Dawn"));
+            assert!(rendered.contains("1/1"));
+            let rows = menu_rows(terminal.get_frame().area(), &app);
+            let highlighted: String = (rows.x..rows.right())
+                .map(|x| &terminal.backend().buffer()[(x, rows.y)])
+                .filter(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+                .map(|cell| cell.symbol())
+                .collect();
+            assert_eq!(highlighted, "RPD");
+            let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+            assert_eq!(cursor.y, rows.y - 2);
+            assert!(cursor.x >= rows.x && cursor.x < rows.right());
+        }
+        app.handle_paste(&"中👩‍💻".repeat(40));
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        assert!(text(&terminal).contains("No matching themes"));
+        assert!(text(&terminal).contains("0/0"));
+        let rows = menu_rows(terminal.get_frame().area(), &app);
+        let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+        assert!(cursor.x >= rows.x && cursor.x < rows.right());
+        assert_eq!(cursor.y, rows.y - 2);
+    }
+
+    #[test]
+    fn no_color_stays_monochrome_including_picker_swatches() {
+        use crate::config::Theme;
+        use ratatui::style::Color;
+
+        let mut app = app();
+        app.theme = Theme::NoColor;
+        let entries = app.preview.clone();
+        app.query = "cargo".into();
+        app.cursor = app.query.len();
+        app.refresh();
+        app.details = entries.clone();
+        app.set_preview(1, entries);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        for view in [
+            View::Main,
+            View::Details,
+            View::Help,
+            View::Manage,
+            View::Themes,
+            View::Confirm {
+                mutation: Mutation::Clear,
+                input: "clear".into(),
+            },
+        ] {
+            app.view = view;
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            for cell in terminal.backend().buffer().content() {
+                assert_eq!(cell.fg, Color::Reset, "{:?}", app.view);
+                assert_eq!(cell.bg, Color::Reset, "{:?}", app.view);
+            }
+            if app.view == View::Main {
+                let cells = terminal.backend().buffer().content();
+                assert!(
+                    cells
+                        .iter()
+                        .any(|cell| cell.modifier.contains(Modifier::REVERSED))
+                );
+                assert!(
+                    cells
+                        .iter()
+                        .any(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+                );
+            }
+        }
+        app.open_overlay(View::Themes);
+        app.handle_paste("nocol");
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        assert!(text(&terminal).contains("1/1"));
+        for cell in terminal.backend().buffer().content() {
+            assert_eq!(cell.fg, Color::Reset);
+            assert_eq!(cell.bg, Color::Reset);
+        }
+    }
+
+    #[test]
+    fn accessible_selected_matches_metadata_and_menus_use_selection_foreground() {
+        use crate::config::Theme;
+
+        for theme in [Theme::AccessibleDark, Theme::AccessibleLight] {
+            let mut app = app();
+            app.theme = theme;
+            let entries = app.preview.clone();
+            app.query = "cargo".into();
+            app.cursor = app.query.len();
+            app.refresh();
+            app.details = entries.clone();
+            app.set_preview(1, entries);
+            let palette = Palette::new(theme);
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            for view in [View::Main, View::Details, View::Manage, View::Themes] {
+                app.view = view;
+                if app.view == View::Themes {
+                    app.theme_picker.query = "accessible".into();
+                    app.theme_picker.refilter();
+                }
+                terminal.draw(|frame| draw(frame, &app)).unwrap();
+                let area = terminal.get_frame().area();
+                let selected = match app.view {
+                    View::Main => {
+                        let (rows, height) = candidate_rows(geometry(area, true).results);
+                        Rect::new(rows.x, rows.y, rows.width, height)
+                    }
+                    View::Details => {
+                        let rows = details_rows(area);
+                        Rect::new(rows.x, rows.y, rows.width, 2)
+                    }
+                    View::Manage => row(menu_rows(area, &app), 0),
+                    View::Themes => {
+                        let offset = app.theme_index() - theme_range(area, &app).start;
+                        row(menu_rows(area, &app), offset as u16)
+                    }
+                    _ => unreachable!(),
+                };
+                for y in selected.y..selected.bottom() {
+                    for x in selected.x..selected.right() {
+                        let cell = &terminal.backend().buffer()[(x, y)];
+                        assert_eq!(
+                            cell.bg,
+                            palette.selected,
+                            "{theme:?} {:?} ({x},{y}): {}",
+                            app.view,
+                            cell.symbol()
+                        );
+                        assert_eq!(
+                            cell.fg,
+                            palette.selection_text,
+                            "{theme:?} {:?}: {}",
+                            app.view,
+                            cell.symbol()
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

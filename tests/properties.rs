@@ -57,7 +57,7 @@ proptest! {
 
     #[test]
     fn arbitrary_tui_key_sequences_do_not_panic(
-        keys in proptest::collection::vec((0u8..8, any::<char>()), 0..256),
+        keys in proptest::collection::vec((0u8..16, any::<char>()), 0..256),
     ) {
         let candidate = SearchCandidate {
             id: 1,
@@ -80,7 +80,15 @@ proptest! {
                 4 => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
                 5 => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
                 6 => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                _ => KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                7 => KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                8 => KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                9 => KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                10 => KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+                11 => KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+                12 => KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+                13 => KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                14 => KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                _ => KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
             };
             let _ = app.handle_key(key);
         }

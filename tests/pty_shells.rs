@@ -572,20 +572,21 @@ proc see {text} {
 }
 spawn -noecho sh -c {stty rows 40 cols 120; before=$(stty -g); fmn search --cwd /repo; after=$(stty -g); test "$before" = "$after" || exit 7; printf '\nFMN_TERMINAL_RESTORED\n'}
 see "INSPECTOR"
-send -- "\033OP"
+send -- "?"
 see "Help"
 send -- "\033"
 see "\033\[?25h"
-send -- "\033OR"
+send -- "\024"
 see "Colour theme"
-send -- "\033\[B"
-after 100
+send -- "\033\[F"
+see "Everforest Light Soft"
+see "40/40"
 send -- "\r"
-see "\033\[?25h"
+see "\033\[5;6H"
 exec stty rows 30 cols 80 < $spawn_out(slave,name) 2>@ stderr
 if {[exec stty size < $spawn_out(slave,name) 2>@ stderr] ne "30 80"} {exit 8}
 after 100
-send -- "\033OQ"
+send -- "\004"
 see "Occurrences"
 send -- "\030"
 see "Command actions"

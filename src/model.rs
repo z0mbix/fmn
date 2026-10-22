@@ -73,6 +73,27 @@ pub struct SearchCandidate {
     pub latest_exit_code: Option<i32>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HistoryStats {
+    pub total: i64,
+    pub unique: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub average_duration_ms: Option<f64>,
+    pub activity: [u64; 30],
+    pub top_commands: Vec<CommandStats>,
+    pub failed_commands: Vec<CommandStats>,
+    pub slow_commands: Vec<CommandStats>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandStats {
+    pub command: String,
+    pub count: i64,
+    pub failures: i64,
+    pub average_duration_ms: Option<f64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::Shell;

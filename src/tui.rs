@@ -1,30 +1,33 @@
 use std::io::{self, IsTerminal, Write};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Position, Rect};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::config::{Theme, UiConfig};
-use crate::model::{Entry, SearchCandidate};
+use crate::config::{Config, Theme, UiConfig, UiPreference};
+use crate::keybindings::{KeyAction, KeyBinding, KeyBindings};
+use crate::model::{Entry, HistoryStats, SearchCandidate};
+use crate::scope::{SearchContext, SearchScope};
 use crate::search::{RankedMatch, Ranker};
 use crate::storage::Store;
 use crate::{Error, Result};
 
+mod bindings;
+mod dashboard;
 mod render;
+mod terminal;
 mod theme;
 
+#[cfg(test)]
+mod features_tests;
+
 use render::draw;
-use theme::THEMES;
+use terminal::TuiTerminal;
+use theme::{THEMES, ThemePicker};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mutation {
@@ -38,6 +41,10 @@ pub enum Intent {
     None,
     Accept(String),
     Cancel,
+    SaveTheme(Theme),
+    SavePreference(UiPreference),
+    ReloadScope,
+    LoadStats,
     LoadDetails(i64),
     Mutate(Mutation),
 }
@@ -49,6 +56,9 @@ enum View {
     Help,
     Manage,
     Themes,
+    Stats,
+    Settings,
+    Keybindings,
     Confirm { mutation: Mutation, input: String },
 }
 
@@ -59,7 +69,8 @@ enum Action {
     Theme,
     Delete,
     Forget,
-    Clear,
+    Stats,
+    Settings,
 }
 
 #[derive(Debug)]
@@ -70,7 +81,18 @@ pub struct App {
     ranked: Vec<RankedMatch>,
     ranker: Ranker,
     selected: usize,
-    current_dir_only: bool,
+    scope: SearchScope,
+    context: SearchContext,
+    preferences: UiConfig,
+    shell_integration: bool,
+    stats: Option<HistoryStats>,
+    stats_scroll: u16,
+    area: Rect,
+    setting_selected: usize,
+    binding_selected: usize,
+    binding_pending: Option<KeyAction>,
+    binding_error: Option<String>,
+    return_to_settings: bool,
     view: View,
     details: Vec<Entry>,
     detail_selected: usize,
@@ -80,6 +102,7 @@ pub struct App {
     action_selected: usize,
     theme: Theme,
     previous_theme: Theme,
+    theme_picker: ThemePicker,
     show_inspector: bool,
     execute_on_select: bool,
     current_dir: String,
@@ -100,7 +123,22 @@ impl App {
             ranked,
             ranker,
             selected: 0,
-            current_dir_only: false,
+            scope: SearchScope::Global,
+            context: SearchContext {
+                cwd: String::new(),
+                repository: None,
+                session: None,
+            },
+            preferences: UiConfig::default(),
+            shell_integration: true,
+            stats: None,
+            stats_scroll: 0,
+            area: Rect::new(0, 0, 80, 24),
+            setting_selected: 0,
+            binding_selected: 0,
+            binding_pending: None,
+            binding_error: None,
+            return_to_settings: false,
             view: View::Main,
             details: Vec::new(),
             detail_selected: 0,
@@ -110,6 +148,7 @@ impl App {
             action_selected: 0,
             theme: Theme::default(),
             previous_theme: Theme::default(),
+            theme_picker: ThemePicker::default(),
             show_inspector: true,
             execute_on_select: false,
             current_dir: String::new(),
@@ -149,14 +188,34 @@ impl App {
         if matches!(self.view, View::Main | View::Details) {
             self.return_to_details = self.view == View::Details;
         }
+        self.return_to_settings =
+            self.view == View::Settings && matches!(view, View::Themes | View::Keybindings);
         self.action_selected = 0;
+        if view == View::Stats {
+            self.stats_scroll = 0;
+        }
+        if view == View::Settings {
+            self.setting_selected = 0;
+        }
+        if view == View::Keybindings {
+            self.binding_selected = 0;
+            self.binding_pending = None;
+            self.binding_error = None;
+        }
         if view == View::Themes {
             self.previous_theme = self.theme;
+            self.theme_picker.query.clear();
+            self.theme_picker.refilter();
         }
         self.view = view;
     }
 
     fn close_overlay(&mut self) {
+        if self.return_to_settings {
+            self.view = View::Settings;
+            self.return_to_settings = false;
+            return;
+        }
         self.view = if self.return_to_details {
             View::Details
         } else {
@@ -165,13 +224,260 @@ impl App {
         self.return_to_details = false;
     }
 
+    fn theme_index(&self) -> usize {
+        self.theme_picker
+            .matches
+            .iter()
+            .position(|matched| THEMES[matched.index].0 == self.theme)
+            .unwrap_or(0)
+    }
+
+    fn confirm_theme(&mut self) -> Intent {
+        if self.theme_picker.matches.is_empty() {
+            return Intent::None;
+        }
+        self.preferences.theme = self.theme;
+        self.close_overlay();
+        Intent::SaveTheme(self.theme)
+    }
+
+    fn preview_theme(&mut self, index: usize) {
+        if let Some(matched) = self.theme_picker.matches.get(index) {
+            self.theme = THEMES[matched.index].0;
+        }
+    }
+
+    fn refilter_themes(&mut self) {
+        self.theme_picker.refilter();
+        if !self.theme_picker.query.trim().is_empty() {
+            self.preview_theme(0);
+        }
+    }
+
+    fn handle_theme_key(&mut self, key: KeyEvent) -> Intent {
+        let index = self.theme_index();
+        let last = self.theme_picker.matches.len().saturating_sub(1);
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
+                self.theme = self.previous_theme;
+                self.close_overlay();
+            }
+            (KeyCode::Enter, _) => return self.confirm_theme(),
+            (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                self.preview_theme(index.saturating_sub(1));
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                self.preview_theme((index + 1).min(last));
+            }
+            (KeyCode::Home, _) => self.preview_theme(0),
+            (KeyCode::End, _) => self.preview_theme(last),
+            (KeyCode::PageUp, _) => self.preview_theme(index.saturating_sub(10)),
+            (KeyCode::PageDown, _) => self.preview_theme((index + 10).min(last)),
+            (KeyCode::Backspace, _) => {
+                if let Some((start, _)) = self.theme_picker.query.grapheme_indices(true).next_back()
+                {
+                    self.theme_picker.query.truncate(start);
+                    self.refilter_themes();
+                }
+            }
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                self.theme_picker.query.clear();
+                self.refilter_themes();
+            }
+            (KeyCode::Char(character), modifiers)
+                if !character.is_control()
+                    && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
+            {
+                self.theme_picker.query.push(character);
+                self.refilter_themes();
+            }
+            _ => {}
+        }
+        Intent::None
+    }
+
     fn actions(&self) -> Vec<Action> {
         let mut actions = vec![Action::Insert, Action::Inspect, Action::Theme];
         if self.selected_detail().is_some() {
             actions.push(Action::Delete);
         }
-        actions.extend([Action::Forget, Action::Clear]);
+        actions.extend([Action::Stats, Action::Settings, Action::Forget]);
         actions
+    }
+
+    fn cycle_scope(&mut self, backwards: bool) -> Intent {
+        self.scope = self.context.next(self.scope, backwards);
+        self.return_to_details = false;
+        self.selected = 0;
+        self.refresh();
+        Intent::ReloadScope
+    }
+
+    fn change_preference(&mut self, preference: UiPreference) -> Intent {
+        match preference {
+            UiPreference::Theme(theme) => {
+                self.preferences.theme = theme;
+                self.theme = theme;
+            }
+            UiPreference::ShowInspector(show) => {
+                self.preferences.show_inspector = show;
+                self.show_inspector = show;
+            }
+            UiPreference::DefaultScope(scope) => {
+                self.preferences.default_scope = scope;
+                self.scope = self.context.effective(scope);
+                self.selected = 0;
+                self.return_to_details = false;
+            }
+            UiPreference::ExecuteOnSelect(execute) => {
+                self.preferences.execute_on_select = execute;
+                self.execute_on_select = execute && self.shell_integration;
+            }
+            UiPreference::Keybinding(action, binding) => {
+                if let Err(error) = self.preferences.keybindings.rebind(action, binding) {
+                    self.binding_error = Some(error);
+                    return Intent::None;
+                }
+            }
+            UiPreference::ResetKeybindings => self.preferences.keybindings = KeyBindings::default(),
+        }
+        Intent::SavePreference(preference)
+    }
+
+    fn activate_setting(&mut self, backwards: bool) -> Intent {
+        let preference = match self.setting_selected {
+            0 => return self.activate_action(Action::Theme),
+            1 => UiPreference::ShowInspector(!self.show_inspector),
+            2 => {
+                let index = SearchScope::ALL
+                    .iter()
+                    .position(|scope| *scope == self.preferences.default_scope)
+                    .unwrap_or(0);
+                let index = (index + if backwards { 3 } else { 1 }) % 4;
+                UiPreference::DefaultScope(SearchScope::ALL[index])
+            }
+            3 => UiPreference::ExecuteOnSelect(!self.preferences.execute_on_select),
+            _ => {
+                self.open_overlay(View::Keybindings);
+                return Intent::None;
+            }
+        };
+        self.change_preference(preference)
+    }
+
+    fn activate_shortcut(&mut self, action: KeyAction) -> Intent {
+        match action {
+            KeyAction::Inspector => {
+                self.change_preference(UiPreference::ShowInspector(!self.show_inspector))
+            }
+            KeyAction::Themes => self.activate_action(Action::Theme),
+            KeyAction::Details => self.activate_action(Action::Inspect),
+            KeyAction::Statistics => self.activate_action(Action::Stats),
+            KeyAction::Settings => self.activate_action(Action::Settings),
+            KeyAction::Scope => self.cycle_scope(false),
+            KeyAction::Actions => {
+                self.open_overlay(View::Manage);
+                Intent::None
+            }
+            KeyAction::Help => {
+                self.open_overlay(View::Help);
+                Intent::None
+            }
+        }
+    }
+
+    fn handle_binding_key(&mut self, key: KeyEvent) -> Intent {
+        if let Some(action) = self.binding_pending {
+            if key.code == KeyCode::Esc {
+                self.binding_pending = None;
+                self.binding_error = None;
+                return Intent::None;
+            }
+            match KeyBinding::from_event(key) {
+                Ok(binding) => {
+                    let intent = self.change_preference(UiPreference::Keybinding(action, binding));
+                    if intent != Intent::None {
+                        self.binding_pending = None;
+                        self.binding_error = None;
+                    }
+                    return intent;
+                }
+                Err(error) => self.binding_error = Some(error),
+            }
+            return Intent::None;
+        }
+        self.binding_error = None;
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => self.close_overlay(),
+            (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                self.binding_selected = self.binding_selected.saturating_sub(1)
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                self.binding_selected = (self.binding_selected + 1).min(KeyAction::ALL.len() - 1)
+            }
+            (KeyCode::Home, _) => self.binding_selected = 0,
+            (KeyCode::End, _) => self.binding_selected = KeyAction::ALL.len() - 1,
+            (KeyCode::Enter, _) => {
+                self.binding_pending = Some(KeyAction::ALL[self.binding_selected])
+            }
+            (KeyCode::Backspace | KeyCode::Delete, _) => {
+                let action = KeyAction::ALL[self.binding_selected];
+                return self
+                    .change_preference(UiPreference::Keybinding(action, action.default_binding()));
+            }
+            (KeyCode::Char('r'), KeyModifiers::NONE) => {
+                return self.change_preference(UiPreference::ResetKeybindings);
+            }
+            _ => {}
+        }
+        Intent::None
+    }
+
+    fn handle_settings_key(&mut self, key: KeyEvent) -> Intent {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => self.close_overlay(),
+            (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                self.setting_selected = self.setting_selected.saturating_sub(1)
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                self.setting_selected = (self.setting_selected + 1).min(4)
+            }
+            (KeyCode::Home, _) => self.setting_selected = 0,
+            (KeyCode::End, _) => self.setting_selected = 4,
+            (KeyCode::Enter | KeyCode::Right | KeyCode::Left | KeyCode::Char(' '), _) => {
+                return self.activate_setting(key.code == KeyCode::Left);
+            }
+            _ => {}
+        }
+        Intent::None
+    }
+
+    fn handle_stats_key(&mut self, key: KeyEvent) -> Intent {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => self.close_overlay(),
+            (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                self.stats_scroll = self.stats_scroll.saturating_sub(1)
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                self.stats_scroll = self
+                    .stats_scroll
+                    .saturating_add(1)
+                    .min(dashboard::stats_max_scroll(self))
+            }
+            (KeyCode::PageUp, _) => self.stats_scroll = self.stats_scroll.saturating_sub(8),
+            (KeyCode::PageDown, _) => {
+                self.stats_scroll = self
+                    .stats_scroll
+                    .saturating_add(8)
+                    .min(dashboard::stats_max_scroll(self))
+            }
+            (KeyCode::Home, _) => self.stats_scroll = 0,
+            (KeyCode::End, _) => self.stats_scroll = dashboard::stats_max_scroll(self),
+            (KeyCode::BackTab, _) => return self.cycle_scope(true),
+            (KeyCode::Char('r'), _) => return Intent::LoadStats,
+            _ => {}
+        }
+        Intent::None
     }
 
     fn activate_action(&mut self, action: Action) -> Intent {
@@ -188,6 +494,14 @@ impl App {
                 self.open_overlay(View::Themes);
                 Intent::None
             }
+            Action::Stats => {
+                self.open_overlay(View::Stats);
+                Intent::LoadStats
+            }
+            Action::Settings => {
+                self.open_overlay(View::Settings);
+                Intent::None
+            }
             action => {
                 let mutation = match action {
                     Action::Delete => self
@@ -196,7 +510,7 @@ impl App {
                     Action::Forget => self
                         .selected_candidate()
                         .map(|candidate| Mutation::ForgetCommand(candidate.id)),
-                    Action::Clear => Some(Mutation::Clear),
+
                     _ => None,
                 };
                 if let Some(mutation) = mutation {
@@ -215,27 +529,28 @@ impl App {
             return Intent::Cancel;
         }
 
+        if matches!(self.view, View::Main | View::Details)
+            && let Some(action) = self.preferences.keybindings.action(key)
+        {
+            return self.activate_shortcut(action);
+        }
+        if self.view == View::Stats
+            && self
+                .preferences
+                .keybindings
+                .get(KeyAction::Scope)
+                .matches(key)
+        {
+            return self.cycle_scope(false);
+        }
         match &mut self.view {
             View::Main => self.handle_main(key),
             View::Details => self.handle_details(key),
             View::Help | View::Manage => self.handle_overlay(key),
-            View::Themes => {
-                let index = THEMES
-                    .iter()
-                    .position(|(theme, _)| *theme == self.theme)
-                    .unwrap_or(0);
-                match key.code {
-                    KeyCode::Esc => {
-                        self.theme = self.previous_theme;
-                        self.close_overlay();
-                    }
-                    KeyCode::Enter => self.close_overlay(),
-                    KeyCode::Up => self.theme = THEMES[index.saturating_sub(1)].0,
-                    KeyCode::Down => self.theme = THEMES[(index + 1).min(THEMES.len() - 1)].0,
-                    _ => {}
-                }
-                Intent::None
-            }
+            View::Themes => self.handle_theme_key(key),
+            View::Stats => self.handle_stats_key(key),
+            View::Settings => self.handle_settings_key(key),
+            View::Keybindings => self.handle_binding_key(key),
             View::Confirm { mutation, input } => {
                 let mutation = mutation.clone();
                 match key.code {
@@ -280,31 +595,7 @@ impl App {
                 }
                 Intent::None
             }
-            (KeyCode::Tab, _) => {
-                self.current_dir_only = !self.current_dir_only;
-                self.refresh();
-                Intent::None
-            }
-            (KeyCode::F(2), _) => self
-                .selected_candidate()
-                .map(|candidate| Intent::LoadDetails(candidate.id))
-                .unwrap_or(Intent::None),
-            (KeyCode::Char('?'), KeyModifiers::CONTROL) | (KeyCode::F(1), _) => {
-                self.open_overlay(View::Help);
-                Intent::None
-            }
-            (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
-                self.open_overlay(View::Manage);
-                Intent::None
-            }
-            (KeyCode::F(3), _) => {
-                self.open_overlay(View::Themes);
-                Intent::None
-            }
-            (KeyCode::F(4), _) => {
-                self.show_inspector = !self.show_inspector;
-                Intent::None
-            }
+            (KeyCode::BackTab, _) => self.cycle_scope(true),
             (KeyCode::Left, _) => {
                 self.cursor = self.query[..self.cursor]
                     .grapheme_indices(true)
@@ -385,18 +676,6 @@ impl App {
                 }
                 Intent::None
             }
-            (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
-                self.open_overlay(View::Manage);
-                Intent::None
-            }
-            (KeyCode::F(1), _) => {
-                self.open_overlay(View::Help);
-                Intent::None
-            }
-            (KeyCode::F(3), _) => {
-                self.open_overlay(View::Themes);
-                Intent::None
-            }
             _ => Intent::None,
         }
     }
@@ -413,11 +692,12 @@ impl App {
                 self.action_selected = (self.action_selected + 1).min(self.actions().len() - 1)
             }
             KeyCode::Enter => return self.activate_action(self.actions()[self.action_selected]),
-            KeyCode::Char('i') | KeyCode::F(2) => return self.activate_action(Action::Inspect),
-            KeyCode::Char('t') | KeyCode::F(3) => return self.activate_action(Action::Theme),
+            KeyCode::Char('i') => return self.activate_action(Action::Inspect),
+            KeyCode::Char('t') => return self.activate_action(Action::Theme),
             KeyCode::Char('d') => return self.activate_action(Action::Delete),
             KeyCode::Char('f') => return self.activate_action(Action::Forget),
-            KeyCode::Char('c') => return self.activate_action(Action::Clear),
+            KeyCode::Char('g') => return self.activate_action(Action::Stats),
+            KeyCode::Char('s') => return self.activate_action(Action::Settings),
             _ => {}
         }
         Intent::None
@@ -447,7 +727,7 @@ impl App {
         self.ranker.rank_into(
             &self.candidates,
             &self.query,
-            self.current_dir_only,
+            self.scope == SearchScope::Directory,
             self.now_millis,
             &mut self.ranked,
         );
@@ -455,20 +735,31 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) {
-        if self.view == View::Main {
+        if matches!(self.view, View::Main | View::Themes) {
             let text: String = text
                 .chars()
                 .map(|c| if c.is_whitespace() { ' ' } else { c })
                 .filter(|c| !c.is_control())
                 .collect();
-            self.query.insert_str(self.cursor, &text);
-            self.cursor += text.len();
-            self.refresh();
+            if self.view == View::Themes {
+                self.theme_picker.query.push_str(&text);
+                self.refilter_themes();
+            } else {
+                self.query.insert_str(self.cursor, &text);
+                self.cursor += text.len();
+                self.refresh();
+            }
         }
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) -> Intent {
+        if self.view == View::Keybindings {
+            return bindings::handle_mouse(self, mouse, area);
+        }
         let position = Position::new(mouse.column, mouse.row);
+        if matches!(self.view, View::Stats | View::Settings) {
+            return dashboard::handle_mouse(self, mouse, area);
+        }
         match self.view {
             View::Main => {
                 let layout = render::geometry(area, self.show_inspector);
@@ -521,19 +812,36 @@ impl App {
                     }
                 }
             }
-            View::Manage | View::Themes
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
-            {
+            View::Themes => {
                 let rows = render::menu_rows(area, self);
                 if rows.contains(position) {
-                    let index = usize::from(mouse.row - rows.y);
-                    if self.view == View::Manage && index < self.actions().len() {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            self.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+                        }
+                        MouseEventKind::ScrollDown => {
+                            self.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                        }
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let range = render::theme_range(area, self);
+                            let index = range.start + usize::from(mouse.row - rows.y);
+                            if index < range.end {
+                                self.preview_theme(index);
+                                return self.confirm_theme();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            View::Manage if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                let rows = render::menu_rows(area, self);
+                if rows.contains(position) {
+                    let visible = render::action_range(area, self);
+                    let index = visible.start + usize::from(mouse.row - rows.y);
+                    if index < visible.end {
                         self.action_selected = index;
                         return self.activate_action(self.actions()[index]);
-                    }
-                    if self.view == View::Themes && index < THEMES.len() {
-                        self.theme = THEMES[index].0;
-                        self.close_overlay();
                     }
                 }
             }
@@ -543,23 +851,26 @@ impl App {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    pub command: String,
+    pub execute: bool,
+}
+
 pub fn run(
     store: &mut Store,
     query: String,
     cwd: String,
     config: &UiConfig,
-) -> Result<Option<String>> {
+    config_path: &Path,
+) -> Result<Option<Selection>> {
     if !io::stderr().is_terminal() || !io::stdin().is_terminal() {
         return Err(Error::Io(io::Error::other(
             "search requires an interactive terminal",
         )));
     }
 
-    let config = UiConfig {
-        execute_on_select: false,
-        ..config.clone()
-    };
-    run_with_backend(store, query, cwd, &config, io::stderr())
+    run_with_backend(store, query, cwd, config, config_path, false, io::stderr())
 }
 
 pub fn run_for_shell(
@@ -567,13 +878,14 @@ pub fn run_for_shell(
     query: String,
     cwd: String,
     config: &UiConfig,
-) -> Result<Option<String>> {
+    config_path: &Path,
+) -> Result<Option<Selection>> {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err(Error::Io(io::Error::other(
             "search requires an interactive terminal",
         )));
     }
-    run_with_backend(store, query, cwd, config, io::stdout())
+    run_with_backend(store, query, cwd, config, config_path, true, io::stdout())
 }
 
 fn run_with_backend<W: Write>(
@@ -581,27 +893,54 @@ fn run_with_backend<W: Write>(
     query: String,
     cwd: String,
     config: &UiConfig,
+    config_path: &Path,
+    shell_integration: bool,
     writer: W,
-) -> Result<Option<String>> {
-    let candidates = store.search_candidates(&cwd)?;
+) -> Result<Option<Selection>> {
+    let context = SearchContext::detect(cwd.clone());
+    let scope = context.effective(config.default_scope);
+    let candidates = store.scoped_search_candidates(&context, scope)?;
     let mut app = App::new(candidates, query, now_millis());
+    app.context = context;
+    app.scope = scope;
+    app.preferences = config.clone();
+    app.shell_integration = shell_integration;
     app.theme = if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
         Theme::NoColor
     } else {
         config.theme
     };
     app.show_inspector = config.show_inspector;
-    app.execute_on_select = config.execute_on_select;
+    app.execute_on_select = config.execute_on_select && shell_integration;
     app.current_dir = cwd.clone();
     let mut terminal = TuiTerminal::enter(writer)?;
 
     loop {
+        if terminal.interrupted() {
+            return Ok(None);
+        }
         if let Some(command_id) = app.selected_candidate().map(|candidate| candidate.id)
             && app.preview_command_id != Some(command_id)
         {
-            app.set_preview(command_id, store.preview_entries_for_command(command_id)?);
+            app.set_preview(
+                command_id,
+                store.scoped_entries_for_command(command_id, 3, &app.context, app.scope)?,
+            );
         }
+        let size = terminal.terminal.size()?;
+        app.area = Rect::new(0, 0, size.width, size.height);
+        app.stats_scroll = app.stats_scroll.min(dashboard::stats_max_scroll(&app));
         terminal.terminal.draw(|frame| draw(frame, &app))?;
+        // A bounded wait lets shutdown signals reach the terminal guard even
+        // when the user is not pressing keys.
+        while !event::poll(Duration::from_millis(50))? {
+            if terminal.interrupted() {
+                return Ok(None);
+            }
+        }
+        if terminal.interrupted() {
+            return Ok(None);
+        }
         let intent = match event::read()? {
             Event::Key(key) if key.is_press() => app.handle_key(key),
             Event::Mouse(mouse) => app.handle_mouse(mouse, terminal.terminal.get_frame().area()),
@@ -613,10 +952,38 @@ fn run_with_backend<W: Write>(
         };
         match intent {
             Intent::None => {}
-            Intent::Accept(command) => return Ok(Some(command)),
+            Intent::Accept(command) => {
+                return Ok(Some(Selection {
+                    command,
+                    execute: app.execute_on_select,
+                }));
+            }
             Intent::Cancel => return Ok(None),
+            Intent::SaveTheme(theme) => Config::save_theme(config_path, theme)?,
+            Intent::SavePreference(preference) => {
+                Config::save_preference(config_path, preference)?;
+                if matches!(preference, UiPreference::DefaultScope(_)) {
+                    app.set_candidates(store.scoped_search_candidates(&app.context, app.scope)?);
+                }
+            }
+            Intent::ReloadScope => {
+                app.set_candidates(store.scoped_search_candidates(&app.context, app.scope)?);
+                if app.view == View::Stats {
+                    app.stats = Some(store.history_stats(&app.context, app.scope, now_millis())?);
+                    app.stats_scroll = 0;
+                }
+            }
+            Intent::LoadStats => {
+                app.stats = Some(store.history_stats(&app.context, app.scope, now_millis())?);
+                app.stats_scroll = 0;
+            }
             Intent::LoadDetails(command_id) => {
-                app.show_details(store.entries_for_command(command_id)?);
+                app.show_details(store.scoped_entries_for_command(
+                    command_id,
+                    -1,
+                    &app.context,
+                    app.scope,
+                )?);
             }
             Intent::Mutate(mutation) => {
                 match mutation {
@@ -624,47 +991,9 @@ fn run_with_backend<W: Write>(
                     Mutation::ForgetCommand(command_id) => store.forget_command(command_id)?,
                     Mutation::Clear => store.clear()?,
                 }
-                app.set_candidates(store.search_candidates(&cwd)?);
+                app.set_candidates(store.scoped_search_candidates(&app.context, app.scope)?);
             }
         }
-    }
-}
-
-struct TuiTerminal<W: Write> {
-    terminal: Terminal<CrosstermBackend<W>>,
-}
-
-impl<W: Write> TuiTerminal<W> {
-    fn enter(writer: W) -> Result<Self> {
-        let terminal = Terminal::new(CrosstermBackend::new(writer))?;
-        enable_raw_mode().map_err(|error| {
-            Error::Io(io::Error::new(
-                error.kind(),
-                format!("could not enable terminal raw mode: {error}"),
-            ))
-        })?;
-        let mut session = Self { terminal };
-        execute!(
-            session.terminal.backend_mut(),
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableBracketedPaste
-        )?;
-        session.terminal.hide_cursor()?;
-        Ok(session)
-    }
-}
-
-impl<W: Write> Drop for TuiTerminal<W> {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            self.terminal.backend_mut(),
-            DisableBracketedPaste,
-            DisableMouseCapture,
-            LeaveAlternateScreen
-        );
-        let _ = self.terminal.show_cursor();
     }
 }
 
@@ -714,6 +1043,10 @@ mod tests {
         }
     }
 
+    fn ctrl(character: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL)
+    }
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
@@ -745,7 +1078,7 @@ mod tests {
 
         assert_eq!(app.handle_key(ctrl_c), Intent::Cancel);
 
-        app.handle_key(key(KeyCode::F(1)));
+        app.handle_key(key(KeyCode::Char('?')));
         assert_eq!(app.handle_key(ctrl_c), Intent::Cancel);
 
         app.show_details(vec![]);
@@ -762,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_strict_directory_filter() {
+    fn scope_shortcut_toggles_strict_directory_filter() {
         let mut app = App::new(
             vec![candidate(1, "global", 0), candidate(2, "local", 1)],
             String::new(),
@@ -776,7 +1109,7 @@ mod tests {
     #[test]
     fn details_can_accept_specific_occurrence() {
         let mut app = App::new(vec![candidate(1, "one", 0)], String::new(), 1);
-        assert_eq!(app.handle_key(key(KeyCode::F(2))), Intent::LoadDetails(1));
+        assert_eq!(app.handle_key(ctrl('d')), Intent::LoadDetails(1));
         app.show_details(vec![Entry {
             id: 9,
             command_id: 1,
@@ -844,7 +1177,7 @@ mod tests {
     fn wrong_confirmation_does_not_mutate() {
         let mut app = App::new(vec![candidate(1, "one", 0)], String::new(), 1);
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
-        app.handle_key(key(KeyCode::Char('c')));
+        app.handle_key(key(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Char('n')));
         app.handle_key(key(KeyCode::Char('o')));
         assert_eq!(app.handle_key(key(KeyCode::Enter)), Intent::None);
@@ -859,7 +1192,7 @@ mod tests {
         let main = terminal.backend().buffer().content().to_vec();
         assert!(main.iter().any(|cell| cell.symbol() == "g"));
 
-        app.handle_key(key(KeyCode::F(1)));
+        app.handle_key(key(KeyCode::Char('?')));
         terminal.draw(|frame| draw(frame, &app)).unwrap();
         let help = terminal.backend().buffer().content();
         assert!(
@@ -911,7 +1244,7 @@ mod tests {
     fn navigation_and_empty_states_are_safe() {
         let mut empty = App::new(vec![], "x".into(), 1);
         assert_eq!(empty.handle_key(key(KeyCode::Enter)), Intent::Cancel);
-        assert_eq!(empty.handle_key(key(KeyCode::F(2))), Intent::None);
+        assert_eq!(empty.handle_key(ctrl('d')), Intent::None);
         empty.handle_key(key(KeyCode::Backspace));
         assert!(empty.query.is_empty());
 
@@ -936,7 +1269,7 @@ mod tests {
     #[test]
     fn overlays_and_detail_management_cover_every_transition() {
         let mut app = App::new(vec![candidate(7, "one", 1)], String::new(), 1);
-        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::CONTROL));
+        app.handle_key(key(KeyCode::Char('?')));
         assert_eq!(app.view, View::Help);
         app.handle_key(key(KeyCode::Char('q')));
         assert_eq!(app.view, View::Main);
@@ -1100,18 +1433,111 @@ mod tests {
             Intent::Accept("cargo test".into())
         );
         app.handle_key(key(KeyCode::Char('t')));
-        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.handle_key(key(KeyCode::Down)), Intent::None);
         assert_eq!(app.theme, Theme::Rose);
-        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Intent::None);
         assert_eq!(app.theme, Theme::Mint);
         assert_eq!(app.view, View::Main);
-        app.handle_key(key(KeyCode::F(3)));
+        app.handle_key(ctrl('t'));
         app.handle_key(key(KeyCode::Down));
-        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Intent::SaveTheme(Theme::Rose)
+        );
         assert_eq!(app.theme, Theme::Rose);
         assert_eq!(app.view, View::Main);
-        app.handle_key(key(KeyCode::F(4)));
+        app.handle_key(ctrl('o'));
         assert!(!app.show_inspector);
+    }
+
+    #[test]
+    fn theme_filter_is_separate_from_history_and_cancel_restores_the_previous_view() {
+        use super::THEMES;
+        use crate::config::Theme;
+
+        let mut app = App::new(vec![candidate(1, "cargo test", 1)], "cargo".into(), 1);
+        app.show_details(vec![entry(1, 1)]);
+        app.handle_key(ctrl('t'));
+        for character in "RP-D".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(app.theme, Theme::RosePineDawn);
+        assert_eq!(app.theme_picker.matches.len(), 1);
+        assert_eq!(app.query, "cargo");
+        assert_eq!(app.details.len(), 1);
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.theme, Theme::Mint);
+        assert_eq!(app.view, View::Details);
+        app.handle_key(ctrl('t'));
+        assert!(app.theme_picker.query.is_empty());
+        assert_eq!(app.theme_picker.matches.len(), THEMES.len());
+    }
+
+    #[test]
+    fn theme_filter_edits_graphemes_sanitizes_paste_and_cannot_confirm_an_empty_list() {
+        use crate::config::Theme;
+
+        let mut app = App::new(vec![], "history".into(), 1);
+        app.handle_key(ctrl('t'));
+        app.handle_paste("nord👩‍💻e\u{301}");
+        assert!(app.theme_picker.matches.is_empty());
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            assert_eq!(app.handle_key(key(code)), Intent::None);
+            assert_eq!(app.view, View::Themes);
+        }
+        app.handle_key(key(KeyCode::Backspace));
+        assert_eq!(app.theme_picker.query, "nord👩‍💻");
+        app.handle_key(key(KeyCode::Backspace));
+        assert_eq!(app.theme_picker.query, "nord");
+        assert_eq!(app.theme, Theme::Nord);
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        app.handle_paste("CAT\nmocha\x1b\r");
+        assert_eq!(app.theme_picker.query, "CAT mocha ");
+        assert_eq!(app.view, View::Themes);
+        assert_eq!(app.theme, Theme::CatppuccinMocha);
+        assert_eq!(app.query, "history");
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Intent::SaveTheme(Theme::CatppuccinMocha)
+        );
+    }
+
+    #[test]
+    fn filtered_theme_mouse_selection_tracks_scrolled_rows_after_resize() {
+        use super::{THEMES, render};
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::layout::Rect;
+
+        let mut app = App::new(vec![], String::new(), 1);
+        for area in [Rect::new(0, 0, 80, 24), Rect::new(0, 0, 40, 12)] {
+            app.handle_key(ctrl('t'));
+            app.handle_paste("a");
+            app.handle_key(key(KeyCode::End));
+            let visible = render::theme_range(area, &app);
+            assert!(visible.start > 0);
+            let expected = THEMES[app.theme_picker.matches[visible.start].index].0;
+            let rows = render::menu_rows(area, &app);
+            let intent = app.handle_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: rows.x,
+                    row: rows.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                area,
+            );
+            assert_eq!(intent, Intent::SaveTheme(expected));
+            assert_eq!(app.theme, expected);
+            assert_eq!(app.view, View::Main);
+        }
     }
 
     #[test]
@@ -1150,6 +1576,69 @@ mod tests {
             area,
         );
         assert_eq!(result, Intent::Accept("command-02".into()));
+    }
+
+    #[test]
+    fn theme_picker_scrolls_and_mouse_hits_the_visible_theme_after_resize() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::layout::Rect;
+
+        use super::{THEMES, render};
+        use crate::config::Theme;
+
+        let mut app = App::new(vec![], String::new(), 1);
+        app.handle_key(ctrl('t'));
+        app.handle_key(key(KeyCode::End));
+        assert_eq!(app.theme, Theme::EverforestLightSoft);
+        for area in [Rect::new(0, 0, 80, 24), Rect::new(0, 0, 40, 12)] {
+            let rows = render::menu_rows(area, &app);
+            let visible = render::theme_range(area, &app);
+            assert!(visible.start > 0);
+            assert!(visible.contains(&app.theme_index()));
+            let expected = THEMES[visible.start].0;
+            let intent = app.handle_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: rows.x,
+                    row: rows.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                area,
+            );
+            assert_eq!(intent, Intent::SaveTheme(expected));
+            assert_eq!(app.theme, expected);
+            assert_eq!(app.view, View::Main);
+            app.handle_key(ctrl('t'));
+            app.handle_key(key(KeyCode::End));
+        }
+        let expected_on_cancel = app.previous_theme;
+        let area = Rect::new(0, 0, 80, 24);
+        let rows = render::menu_rows(area, &app);
+        let mouse = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: rows.x,
+            row: rows.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse(mouse, area);
+        assert_eq!(app.theme, Theme::EverforestLightMedium);
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                ..mouse
+            },
+            area,
+        );
+        assert_eq!(app.theme, Theme::EverforestLightSoft);
+        app.handle_key(key(KeyCode::Home));
+        assert_eq!(app.theme, Theme::Mint);
+        app.handle_key(key(KeyCode::PageDown));
+        assert_eq!(app.theme_index(), 10);
+        app.handle_key(key(KeyCode::PageUp));
+        assert_eq!(app.theme, Theme::Mint);
+        app.handle_key(key(KeyCode::End));
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.theme, expected_on_cancel);
     }
 
     #[test]
