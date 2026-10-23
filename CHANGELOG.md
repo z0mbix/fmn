@@ -6,6 +6,10 @@ All notable changes to this project will be documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- explicit NO_COLOR usage documentation and terminal regression coverage for environment values and saved No colour theme selection
+
 ## [0.2.0] - 2026-10-22
 
 ### Added

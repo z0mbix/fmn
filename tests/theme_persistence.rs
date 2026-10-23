@@ -6,7 +6,13 @@ use std::process::Command;
 
 use fmn::config::{Config, Theme};
 
-fn run_flow(root: &Path, config: &Path, use_override: bool, shell_integration: bool, flow: &str) {
+fn run_flow(
+    root: &Path,
+    config: &Path,
+    use_override: bool,
+    shell_integration: bool,
+    flow: &str,
+) -> Vec<u8> {
     let setup = r#"
 set timeout 10
 log_user 1
@@ -78,6 +84,114 @@ proc cleanup {} {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    output.stdout
+}
+
+fn has_ansi_color(output: &[u8]) -> bool {
+    String::from_utf8_lossy(output)
+        .split("\x1b[")
+        .skip(1)
+        .any(|sequence| {
+            let Some(end) = sequence.find(|character: char| ('@'..='~').contains(&character))
+            else {
+                return false;
+            };
+            sequence.as_bytes()[end] == b'm'
+                && sequence[..end].split([';', ':']).any(|parameter| {
+                    parameter.parse::<u16>().is_ok_and(
+                        |code| matches!(code, 30..=38 | 40..=48 | 58 | 90..=97 | 100..=107),
+                    )
+                })
+        })
+}
+
+#[test]
+fn no_color_environment_disables_ansi_colors_for_any_nonempty_value_without_saving() {
+    for value in [None, Some(""), Some("1"), Some("0"), Some("false")] {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config.toml");
+        let original = "# keep my preferences\n[history]\nignore_patterns = ['secret *']\n";
+        std::fs::write(&config, original).unwrap();
+        let monochrome = value.is_some_and(|value| !value.is_empty());
+        let environment = value.map_or_else(
+            || "unset -nocomplain env(NO_COLOR)".to_owned(),
+            |value| format!("set env(NO_COLOR) {{{value}}}"),
+        );
+        let counter = if monochrome { "5/40" } else { "1/40" };
+        let output = run_flow(
+            root.path(),
+            &config,
+            true,
+            false,
+            &format!(
+                r#"
+{environment}
+launch
+see "\033\[5;6H"
+send -- "\024"
+see "Colour"
+see "theme"
+see "{counter}"
+send -- "\033"
+see "\033\[5;6H"
+send -- "\033"
+finish 1
+"#
+            ),
+        );
+        assert_eq!(has_ansi_color(&output), !monochrome, "NO_COLOR={value:?}");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+    }
+}
+
+#[test]
+fn no_color_can_be_fuzzy_selected_saved_and_reopened_without_the_environment_variable() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config.toml");
+    let original = "# appearance\n[ui]\ntheme = 'mint'\n";
+    std::fs::write(&config, original).unwrap();
+    run_flow(
+        root.path(),
+        &config,
+        true,
+        false,
+        r#"
+launch
+send -- "\024"
+see "Colour"
+see "theme"
+send -- "\033\[200~no-color\033\[201~"
+see "1/1"
+send -- "\r"
+see "\033\[5;6H"
+send -- "\033"
+finish 1
+"#,
+    );
+    assert_eq!(Config::load(&config).unwrap().ui.theme, Theme::NoColor);
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        original.replace("'mint'", "\"no-color\"")
+    );
+    let output = run_flow(
+        root.path(),
+        &config,
+        true,
+        false,
+        r#"
+launch
+see "\033\[5;6H"
+send -- "\024"
+see "Colour"
+see "theme"
+see "5/40"
+send -- "\033"
+see "\033\[5;6H"
+send -- "\033"
+finish 1
+"#,
+    );
+    assert!(!has_ansi_color(&output));
 }
 
 #[test]

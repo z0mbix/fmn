@@ -149,6 +149,14 @@ comments are preserved. Escape cancels the preview without saving. A nonempty
 `NO_COLOR` starts with No colour. See the [theme catalogue and palette sources](src/tui/THEMES.md)
 for every config name and attribution notice.
 
+To start without colours, run `NO_COLOR=1 fmn search` or export `NO_COLOR=1`
+in your shell. Following the [NO_COLOR convention](https://no-color.org/), any
+nonempty value disables colours by default, including `0`; an empty value does
+not. This leaves your saved theme unchanged. Bold, underlining, and reverse-video
+selection remain available. To save monochrome mode as your theme, press Ctrl-T,
+search for `no-color`, and select **No colour**, or set `theme = "no-color"`
+under `[ui]` in your config file.
+
 To run accepted Ctrl-R selections immediately, opt in through the config file:
 
 ```toml
