@@ -112,6 +112,10 @@ send -- "\022"
 see "\033\[?25l"
 send -- "\033"
 see "\033\[?1049l"
+# Leaving fmn's alternate screen precedes the parent shell's input redraw.
+# Wait for the shell before sending more keys; a fixed pause alone races
+# with ZLE restoring its buffer on a busy macOS runner.
+see "FMN> "
 after 200
 if {[file exists $cancelled] || [file size $marker] != $initial} {exit 6}
 send -- "\025"
@@ -121,6 +125,7 @@ configure {'not-a-boolean'}
 send -- $pending
 send -- "\022"
 see "invalid type"
+see "FMN> "
 after 200
 if {[file exists $cancelled] || [file size $marker] != $initial} {exit 7}
 send -- "\025"
@@ -132,6 +137,7 @@ see "\033\[?25l"
 send -- "cd literal"
 send -- "\r"
 see "\033\[?1049l"
+see "FMN> "
 after 200
 if {[file size $marker] != $initial} {exit 8}
 send -- "\r"

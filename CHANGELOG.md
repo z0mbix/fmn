@@ -10,6 +10,10 @@ All notable changes to this project will be documented here. The format follows
 
 - explicit NO_COLOR usage documentation and terminal regression coverage for environment values and saved No colour theme selection
 
+### Fixed
+
+- wait for the parent shell to redraw before continuing selection tests, avoiding a macOS CI timing race
+
 ## [0.2.0] - 2026-10-22
 
 ### Added
