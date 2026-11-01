@@ -18,20 +18,20 @@ globset = "0.4"
 nucleo-matcher = "0.3.1"
 ratatui = "0.30"
 # rusqlite 0.40 requires Rust 1.95's cfg_select! macro.
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 tempfile = "3"
 thiserror = "2"
-toml = "0.9"
+toml = "1.1"
 toml_edit = { version = "0.25", features = ["serde"] }
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 [dev-dependencies]
 assert_cmd = "2"
