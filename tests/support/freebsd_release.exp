@@ -1,0 +1,80 @@
+# Exercise the unpacked release through real interactive shells.
+set timeout 20
+log_user 1
+lassign $argv binary shell root
+file mkdir $root
+set env(FMN_DATA_DIR) [file join $root data]
+set env(FMN_CONFIG) [file join $root config.toml]
+set env(HISTFILE) [file join $root native-history]
+set env(INPUTRC) /dev/null
+set env(PATH) "[file dirname $binary]:$env(PATH)"
+set command {printf 'release-shell-marker\n' >> "$FMN_DATA_DIR/executions"; printf '\nFMN_RELEASE_EXECUTED\n'}
+set marker [file join $env(FMN_DATA_DIR) executions]
+set rc [open [file join $root rc] w]
+switch $shell {
+    bash {
+        puts $rc {PS1='FMN> '; HISTCONTROL=; HISTIGNORE=; eval "$(fmn init bash)"}
+        set arguments [list bash --noprofile --rcfile [file join $root rc] -i]
+    }
+    zsh {
+        puts $rc {PS1='FMN> '; eval "$(fmn init zsh)"}
+        set env(ZDOTDIR) $root
+        set arguments [list zsh -d -i]
+    }
+    fish {
+        puts $rc {function fish_prompt; printf 'FMN> '; end; fmn init fish | source}
+        set arguments [list fish --no-config -i -C "source '[file join $root rc]'"]
+    }
+    default {error "unsupported shell: $shell"}
+}
+close $rc
+if {$shell eq "zsh"} {file copy [file join $root rc] [file join $root .zshrc]}
+proc see {text} {
+    expect {
+        -exact $text {}
+        timeout {error "timed out waiting for $text"}
+        eof {error "shell exited waiting for $text"}
+    }
+}
+proc executions {} {
+    set file [open $::marker r]
+    set lines [split [string trim [read $file]] \n]
+    close $file
+    return [llength $lines]
+}
+spawn -noecho {*}$arguments
+see "FMN> "
+send -- "$command\r"
+see "FMN_RELEASE_EXECUTED\r\n"
+see "FMN> "
+if {[executions] != 1} {error "initial command did not execute"}
+send -- "\022"
+see "\033\[?25l"
+send -- "\r"
+see "\033\[?1049l"
+see $command
+after 200
+if {[executions] != 1} {error "selection executed without opting in"}
+send -- "\r"
+see "FMN_RELEASE_EXECUTED\r\n"
+see "FMN> "
+if {[executions] != 2} {error "inserted command did not execute"}
+set config [open $env(FMN_CONFIG) w]
+puts $config "\[ui\]\nexecute_on_select = true"
+close $config
+send -- "\022"
+see "\033\[?25l"
+send -- "\r"
+see "\033\[?1049l"
+see "FMN_RELEASE_EXECUTED\r\n"
+see "FMN> "
+if {[executions] != 3} {error "opted-in selection did not execute"}
+send -- "\022"
+see "\033\[?25l"
+send -- "\033"
+see "\033\[?1049l"
+see "FMN> "
+if {[executions] != 3} {error "cancellation executed a command"}
+send -- "exit\r"
+expect eof
+exit [lindex [wait] 3]

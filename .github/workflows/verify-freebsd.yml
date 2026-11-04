@@ -1,0 +1,45 @@
+name: Verify FreeBSD archives
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: FreeBSD ${{ matrix.release }} (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ['15.0', '15.1']
+        target: [x86_64-unknown-freebsd, aarch64-unknown-freebsd]
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-freebsd
+          - arch: aarch64
+            target: aarch64-unknown-freebsd
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: artifacts-build-local-${{ matrix.target }}
+          path: release
+      - name: Verify packaged binary in a fresh FreeBSD VM
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1, 2026-10-03
+        with:
+          release: ${{ matrix.release }}
+          arch: ${{ matrix.arch }}
+          prepare: |
+            pkg install -y python3 fish zsh bash expect
+          run: |
+            set -eu
+            export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
+            freebsd-version
+            uname -m
+            python3 scripts/freebsd_release.py verify \
+              --target '${{ matrix.target }}' --directory release
