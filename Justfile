@@ -18,7 +18,7 @@ test:
     cargo test --all-targets --all-features
 
 test-release:
-    python3 -m unittest discover -s tests -p 'test_homebrew_formula.py'
+    python3 -m unittest discover -s tests -p 'test_*.py'
 
 check: fmt lint test test-release
 

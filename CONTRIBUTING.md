@@ -44,7 +44,7 @@ regression signals rather than hard timing gates because hosts differ.
 3. Run `dist plan` and inspect the artifact matrix.
 4. Commit the release, create an annotated `vX.Y.Z` tag, and push it.
 5. Verify checksums, GitHub artifact attestations, and installation on one
-   clean macOS and Linux host.
+   clean macOS and Linux host, plus FreeBSD 15.0 and 15.1 on both architectures.
 
 The generated release workflow is owned by `dist-workspace.toml`; regenerate it
 with pinned dist 0.31.0 after changing release configuration.
@@ -52,6 +52,23 @@ with pinned dist 0.31.0 after changing release configuration.
 Release tags run the full release checks before building. Each packaged binary
 is checksum-verified and runs `--version` and `doctor` on its native macOS or
 Linux architecture before the GitHub release is published.
+
+FreeBSD amd64 and arm64 use the reusable `freebsd.yml` workflow. It builds on
+15.0, runs the complete native test suite, and packages bundled SQLite together
+with the documentation and palette notices. Fresh 15.0 and 15.1 VMs then verify
+the archives, base-system linkage, history round trips, shell integration, and
+terminal recovery. These jobs gate publication. Initial native qualification is
+pending; see [the FreeBSD release notes](docs/freebsd.md).
+
+FreeBSD assets are registered through `extra-artifacts`; they are deliberately
+absent from cargo-dist's builtin target matrix and shell installer. The global
+build verifies and collects both archives and checksums from the downloaded
+workflow artifacts. Dot-prefixed input copies survive cargo-dist's global output
+cleanup; the generated publishing glob excludes those copies from release assets.
+Provenance attestations run at the host stage for all release assets after the
+native checks pass. PRs use upload mode to rehearse builds and artifact handoff
+without publishing. The **Build FreeBSD releases** workflow can also be run
+manually without creating a tag or release.
 
 Stable releases then update `Formula/fmn.rb` in `z0mbix/homebrew-tap`. The
 publisher downloads the public archives and verifies all four SHA-256 hashes

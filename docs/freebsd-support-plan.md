@@ -1,6 +1,9 @@
 # FreeBSD support implementation plan
 
-Status: **planned; not implemented or qualified**. Written 2026-10-21.
+Status: **historical plan**, written 2026-10-21. The implementation now includes
+both amd64 and arm64, targeting the user's FreeBSD 15.0 and 15.1 servers.
+See [the current release implementation and qualification status](freebsd.md).
+The scope and checklist below record the original proposal, not current support.
 
 ## Objective and initial scope
 

@@ -42,6 +42,17 @@ class HomebrewFormulaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mismatched checksum"):
             homebrew_formula("v0.1.0", self.directory)
 
+    def test_additional_freebsd_assets_leave_the_four_formula_inputs_unchanged(self):
+        original = homebrew_formula("v0.1.0", self.directory)
+        checksums = list(self.checksums)
+        for arch in ("x86_64", "aarch64"):
+            name = f"fmn-{arch}-unknown-freebsd.tar.xz"
+            contents = arch.encode()
+            (self.directory / name).write_bytes(contents)
+            checksums.append(f"{hashlib.sha256(contents).hexdigest()}  {name}\n")
+        self.write_checksums(checksums)
+        self.assertEqual(homebrew_formula("v0.1.0", self.directory), original)
+
     def test_requires_every_archive_and_checksum(self):
         self.write_checksums(self.checksums[1:])
         with self.assertRaisesRegex(ValueError, "Missing or mismatched"):

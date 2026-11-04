@@ -13,6 +13,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  freebsd:
+    # PRs exercise this workflow through cargo-dist's release rehearsal.
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/freebsd.yml
+    with:
+      plan: '{}'
+
   test:
     name: Test (${{ matrix.os }})
     strategy:

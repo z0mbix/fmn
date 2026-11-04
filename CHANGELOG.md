@@ -8,6 +8,7 @@ All notable changes to this project will be documented here. The format follows
 
 ### Added
 
+- FreeBSD amd64 and arm64 release archives, SHA-256 checksums, provenance, and native build/runtime gates for 15.0 and 15.1 (initial CI qualification pending)
 - explicit NO_COLOR usage documentation and terminal regression coverage for environment values and saved No colour theme selection
 
 ### Fixed
