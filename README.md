@@ -4,6 +4,8 @@
 It records commands and outcomes in a private SQLite database and provides a
 fast full-screen Ctrl-R search without accounts, sync, or a background service.
 
+![fmn history search and command inspector in the Dracula theme](docs/fmn.png)
+
 ## Status
 
 The utility is implemented and tested on macOS and Linux. Database migrations
