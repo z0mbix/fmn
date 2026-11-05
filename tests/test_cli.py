@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import json
 import os
@@ -88,6 +89,18 @@ class CLITests(unittest.TestCase):
         self.assertEqual(self.database.parent.stat().st_mode & 0o777, 0o700)
         self.config.unlink()
         self.assertIn("[warn] hook diagnostics", self.fmn("doctor").stdout)
+
+    def test_concurrent_first_capture_from_separate_processes(self):
+        with ThreadPoolExecutor(max_workers=12) as workers:
+            list(workers.map(
+                lambda i: self.record("echo concurrent", session=str(i), stamp=1000 + i),
+                range(12),
+            ))
+        entries = self.entries()
+        self.assertEqual(len(entries), 12)
+        self.assertEqual(len({entry["command_id"] for entry in entries}), 1)
+        self.assertEqual({entry["session_id"] for entry in entries}, {str(i) for i in range(12)})
+        self.assertTrue(all(entry["duration_ms"] == 25 for entry in entries))
 
     def test_delete_forget_clear_and_pending_checkpoint(self):
         self.record("repeat")

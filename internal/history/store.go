@@ -3,6 +3,7 @@ package history
 import (
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 )
 
@@ -49,6 +51,12 @@ func Open(path string) (*Store, error) {
 	if err := os.Chmod(parent, 0o700); err != nil {
 		return nil, err
 	}
+	initLock, err := lockInitialization(path)
+	if err != nil {
+		return nil, fmt.Errorf("open history: %w", err)
+	}
+	defer initLock.Close()
+
 	dsn := url.URL{
 		Scheme:   "file",
 		Path:     filepath.ToSlash(path),
@@ -72,6 +80,27 @@ func Open(path string) (*Store, error) {
 		}
 		// SQLite can report BUSY immediately when two first opens try to
 		// switch to WAL. Recheck the schema and journal after the other open.
+		time.Sleep(15 * time.Millisecond)
+	}
+}
+
+func lockInitialization(path string) (*os.File, error) {
+	lock, err := os.OpenFile(path+".init.lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	// Keep the lock file in place so every process locks the same inode.
+	// Only opening and migrating the database is serialized.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return lock, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EINTR) || !time.Now().Before(deadline) {
+			lock.Close()
+			return nil, fmt.Errorf("lock history initialization: %w", err)
+		}
 		time.Sleep(15 * time.Millisecond)
 	}
 }
