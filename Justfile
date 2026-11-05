@@ -15,6 +15,12 @@ lint:
 build:
     go build -mod=readonly -trimpath -o bin/fmn ./cmd/fmn
 
+# Remove local builds, release archives, coverage, and Python caches.
+clean:
+    rm -f bin/fmn
+    rm -rf bin/dist bin/coverage
+    find bin tests -type d -name __pycache__ -prune -exec rm -rf {} +
+
 test: build
     go test -mod=readonly ./...
     FMN_TEST_BIN="$PWD/bin/fmn" python3 -m unittest discover -s tests -p 'test_*.py'
