@@ -86,7 +86,7 @@ jobs:
           copyback: false
           prepare: |
             set -eu
-            pkg install -y rust python3 fish zsh bash expect hs-ShellCheck
+            pkg install -y rust git python3 fish zsh bash expect hs-ShellCheck
             # The terminal recovery tests open an inherited descriptor via /dev/fd.
             if ! mount -p | awk '$2 == "/dev/fd" && $3 == "fdescfs" { found = 1 } END { exit !found }'; then
               mount -t fdescfs fdesc /dev/fd
