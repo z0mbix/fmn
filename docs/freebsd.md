@@ -45,22 +45,24 @@ FreeBSD base `sh` or `csh`. Its generated release shell installer currently
 supports macOS/Linux only; use the FreeBSD archives directly.
 
 You can also build from a checkout using Rust 1.88 or newer and the base C
-compiler:
+compiler. On FreeBSD 15.0, use an [upstream Rust toolchain](https://doc.rust-lang.org/rustc/platform-support/freebsd.html)
+for your architecture. The Rust package built against 15.1 needs libc symbols
+unavailable on 15.0.
 
 ```sh
-pkg install rust
 cargo install --locked --path .
 ```
 
-Package installation requires root; Cargo installation can run as your normal
-user. There is no FreeBSD port or `pkg install fmn` package in this change.
+Cargo installation can run as your normal user.
 
 ## Release qualification
 
 - `freebsd.yml` runs formatting, Clippy, all Rust tests (including SQLite
   concurrency, shell PTYs, and signal/panic terminal recovery), Python release
   tests, and ShellCheck before building with the locked dependencies and dist
-  profile. The toolchain, OS, architecture, and shell versions are logged.
+  profile. It installs pinned, checksum-verified Rust components from Rust's
+  upstream distribution for both architectures. The toolchain, OS,
+  architecture, and shell versions are logged.
 - Archives contain the executable, README, changelog, MIT license, theme
   catalogue, and all bundled palette notices. Checksums use the portable
   `SHA256  filename` format.
@@ -79,6 +81,8 @@ user. There is no FreeBSD port or `pkg install fmn` package in this change.
 - PR release workflows build and upload artifacts without publishing. The
   FreeBSD workflow can also run through `workflow_dispatch`; it uploads the
   candidate archives and verifies them without a tag or GitHub release.
+  The `custom-freebsd / FreeBSD qualification` check reports one result for all
+  builds and archive checks. Require it on `main` to prevent an early merge.
 
 The VM action is pinned to a commit and the guest releases are explicit.
 Keep the 15.0 baseline while it is needed for the target servers; update it
