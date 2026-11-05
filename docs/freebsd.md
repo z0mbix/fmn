@@ -33,5 +33,6 @@ Zsh, or Bash as shown in the [README](../README.md#install).
 
 The 15.0 VM uses base-system tools to check the checksum, static linkage,
 version, and SQLite capture. The 15.1 VM runs the CLI and terminal suite with
-Fish, Zsh, and Bash. Both architectures must pass before a tag run publishes.
-A manual Release workflow run exercises those checks without a tag.
+Fish, Zsh, and Bash. Both architectures must pass before a PR can merge or a
+tagged release can publish. A manual Release workflow run also exercises those
+checks.

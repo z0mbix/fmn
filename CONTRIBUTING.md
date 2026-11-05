@@ -25,9 +25,9 @@ must keep the syntax and interactive checks green.
 
 The Release workflow sets the binary version from the tag. It builds all six
 archives on Linux with CGO disabled and checks the packaged binaries on each
-macOS and Linux architecture. Tagged releases also require the [FreeBSD
-runtime checks](docs/freebsd.md) before publication. A PR builds and verifies
-the archives on macOS and Linux. A manual run includes the FreeBSD VM checks.
+macOS and Linux architecture. The [FreeBSD runtime checks](docs/freebsd.md)
+are required before merging a PR or publishing a tagged release. A manual run
+also exercises the FreeBSD VM checks.
 
 Stable releases update `Formula/fmn.rb` in `z0mbix/homebrew-tap` using the
 `HOMEBREW_TAP_SSH_KEY` Actions secret. Prereleases leave the tap on the stable

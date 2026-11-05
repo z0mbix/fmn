@@ -52,8 +52,7 @@ jobs:
     with:
       version: ${{ needs.build.outputs.version }}
 
-  freebsd:
-    if: github.event_name != 'pull_request'
+  custom-freebsd:
     needs: build
     uses: ./.github/workflows/verify-freebsd.yml
     with:
@@ -61,7 +60,7 @@ jobs:
 
   publish:
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [test, build, verify, freebsd]
+    needs: [test, build, verify, custom-freebsd]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

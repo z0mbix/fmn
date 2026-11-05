@@ -86,3 +86,20 @@ jobs:
             tar -xf "release/fmn-$TARGET.tar.xz" -C release
             export FMN_TEST_BIN="$PWD/release/fmn-$TARGET/fmn"
             python3 -m unittest discover -s tests -p 'test_*.py'
+
+  qualify:
+    # Main's ruleset requires this check name under the custom-freebsd caller.
+    name: FreeBSD qualification
+    if: ${{ always() }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    env:
+      RESULT: ${{ needs.verify.result }}
+    steps:
+      - name: Require every FreeBSD runtime check
+        run: |
+          if [ "$RESULT" != success ]; then
+            printf 'FreeBSD verification result: %s\n' "$RESULT" >&2
+            exit 1
+          fi
