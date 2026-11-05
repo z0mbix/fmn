@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.homebrew_formula import PLATFORMS, homebrew_formula, stable_version, validate_release
+from bin.homebrew_formula import PLATFORMS, homebrew_formula, stable_version, validate_release
 
 
 class HomebrewFormulaTests(unittest.TestCase):

@@ -3,7 +3,7 @@ name: Publish Homebrew formula
 on:
   workflow_call:
     inputs:
-      plan:
+      release_tag:
         required: true
         type: string
     secrets:
@@ -31,7 +31,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      RELEASE_TAG: ${{ inputs.release_tag || fromJSON(inputs.plan).announcement_tag }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -46,7 +46,7 @@ jobs:
           python3 - <<'PY'
           import json
           import os
-          from scripts.homebrew_formula import validate_release
+          from bin.homebrew_formula import validate_release
 
           with open("release.json") as source:
               release = json.load(source)
@@ -73,7 +73,7 @@ jobs:
           ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
       - name: Verify archives and generate formula
         if: steps.release.outputs.publish == 'true'
-        run: python3 scripts/homebrew_formula.py "$RELEASE_TAG" release homebrew-tap/Formula/fmn.rb
+        run: python3 bin/homebrew_formula.py "$RELEASE_TAG" release homebrew-tap/Formula/fmn.rb
       - name: Commit and publish formula
         if: steps.release.outputs.publish == 'true'
         shell: bash

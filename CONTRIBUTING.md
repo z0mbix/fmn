@@ -1,78 +1,35 @@
 # Contributing
 
-## Setup
+Use the Go version in `go.mod`, Python 3, Just, Fish, Zsh, Bash, Expect, and
+ShellCheck. Run `just check` before opening a PR. It formats nothing in place
+and runs Go unit tests, CLI tests, and real terminal tests for the shell hooks.
+Use `just build` to put the local executable at `bin/fmn`.
 
-Install stable Rust, Python 3, `just`, Fish, Zsh, Bash, `expect`, and ShellCheck. Then run:
+Use `just coverage` to combine Go unit coverage with coverage collected from
+CLI and terminal subprocesses. Reports go in `bin/coverage/`. CI requires 80%
+statement coverage. Run `just stress` for repeated SQLite concurrency checks.
+Run `just fuzz` for the native import parser, or pass a package and fuzz target
+for configuration and search.
 
-```sh
-just check
-cargo run -- doctor
-```
-
-Keep changes focused and include tests at the lowest useful layer. Parser,
-ranking, privacy, and TUI-state changes should normally include property or
-table-driven tests. Shell changes must keep the syntax and PTY suites green.
-Schema changes require an append-only migration and upgrade tests.
-
-Terminal lifecycle changes must keep the recovery suite green:
-
-```sh
-cargo test --test terminal_recovery
-cargo test --lib tui::terminal
-```
-
-These tests use isolated PTYs to check terminal settings, cursor visibility,
-alternate screen, mouse capture, and bracketed paste after shutdown signals
-and panic unwinding. They run as part of `just check` on macOS and Linux.
-
-## Extended verification
-
-Install the optional tools:
-
-```sh
-cargo install cargo-llvm-cov cargo-fuzz cargo-mutants cargo-deny
-rustup component add llvm-tools-preview
-```
-
-Run `just coverage`, `just stress`, and the relevant fuzz target. Benchmarks are
-regression signals rather than hard timing gates because hosts differ.
+Keep changes focused and test them at the lowest useful layer. SQLite schema
+changes require an append-only migration and an upgrade test. Shell changes
+must keep the syntax and interactive checks green.
 
 ## Releases
 
-1. Run `just release-check`.
-2. Update `CHANGELOG.md` and the version in `Cargo.toml`.
-3. Run `dist plan` and inspect the artifact matrix.
-4. Commit the release, create an annotated `vX.Y.Z` tag, and push it.
-5. Verify checksums, GitHub artifact attestations, and installation on one
-   clean macOS and Linux host, plus FreeBSD 15.0 and 15.1 on both architectures.
+1. Update `CHANGELOG.md`.
+2. Run `just release-check` to test and build all six archives in `bin/dist/`. Use
+   `just dist 1.2.3` to build locally with a specific binary version.
+3. Commit the release changes, then create and push an annotated `vX.Y.Z` tag.
+4. Check the release workflow and verify the published checksums and attestations.
 
-The generated release workflow is owned by `dist-workspace.toml`; regenerate it
-with pinned dist 0.31.0 after changing release configuration.
+The Release workflow sets the binary version from the tag. It builds all six
+archives on Linux with CGO disabled and checks the packaged binaries on each
+macOS and Linux architecture. The [FreeBSD runtime checks](docs/freebsd.md)
+are required before merging a PR or publishing a tagged release. A manual run
+also exercises the FreeBSD VM checks.
 
-Release tags run the full release checks before building. Each packaged binary
-is checksum-verified and runs `--version` and `doctor` on its native macOS or
-Linux architecture before the GitHub release is published.
-
-FreeBSD amd64 and arm64 use the reusable `freebsd.yml` workflow. It builds on
-15.0 with upstream Rust and packages the native binary with the documentation
-and palette notices. Fresh 15.0 VMs verify the archive with base-system tools.
-Fresh 15.1 VMs run the complete native suite and exercise the packaged binary's
-shell integration and terminal recovery. These jobs gate publication. Initial
-native qualification is pending. See [the FreeBSD release notes](docs/freebsd.md).
-
-FreeBSD assets are registered through `extra-artifacts`; they are deliberately
-absent from cargo-dist's builtin target matrix and shell installer. The global
-build verifies and collects both archives and checksums from the downloaded
-workflow artifacts. Dot-prefixed input copies survive cargo-dist's global output
-cleanup; the generated publishing glob excludes those copies from release assets.
-Provenance attestations run at the host stage for all release assets after the
-native checks pass. PRs use upload mode to rehearse builds and artifact handoff
-without publishing. The **Build FreeBSD releases** workflow can also be run
-manually without creating a tag or release.
-
-Stable releases then update `Formula/fmn.rb` in `z0mbix/homebrew-tap`. The
-publisher downloads the public archives and verifies all four SHA-256 hashes
-before generating the formula. It uses a dedicated write-enabled deploy key
-for the tap, stored here as the `HOMEBREW_TAP_SSH_KEY` Actions secret. Prereleases
-leave the tap on the latest stable version. To retry tap publication for an
-existing release, run the **Publish Homebrew formula** workflow with its tag.
+Stable releases update `Formula/fmn.rb` in `z0mbix/homebrew-tap` using the
+`HOMEBREW_TAP_SSH_KEY` Actions secret. Prereleases leave the tap on the stable
+version. To retry the tap update, run **Publish Homebrew formula** with the
+existing release tag.

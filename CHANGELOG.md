@@ -8,8 +8,13 @@ All notable changes to this project will be documented here. The format follows
 
 ### Added
 
-- FreeBSD amd64 and arm64 release archives, SHA-256 checksums, provenance, and native build/runtime gates for 15.0 and 15.1 (initial CI qualification pending)
+- FreeBSD amd64 and arm64 release archives, SHA-256 checksums, provenance, and native runtime gates for 15.0 and 15.1 (initial CI qualification pending)
 - explicit NO_COLOR usage documentation and terminal regression coverage for environment values and saved No colour theme selection
+
+### Changed
+
+- Port fmn to Go and Charm while preserving SQLite history, configuration, shell hooks, and themes.
+- Cross-compile all six release binaries with CGO disabled and verify the packaged binaries on native runners.
 
 ### Fixed
 
