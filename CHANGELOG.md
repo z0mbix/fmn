@@ -6,9 +6,11 @@ All notable changes to this project will be documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-05
+
 ### Added
 
-- FreeBSD amd64 and arm64 release archives, SHA-256 checksums, provenance, and native build/runtime gates for 15.0 and 15.1 (initial CI qualification pending)
+- FreeBSD amd64 and arm64 release archives for 15.0 and 15.1 with SHA-256 checksums, provenance attestations, and native verification
 - explicit NO_COLOR usage documentation and terminal regression coverage for environment values and saved No colour theme selection
 
 ### Fixed
@@ -54,6 +56,7 @@ All notable changes to this project will be documented here. The format follows
 - optional immediate command execution through shell integration (off by default)
 - verified macOS and Linux binaries published to `z0mbix/homebrew-tap`
 
-[Unreleased]: https://github.com/z0mbix/fmn/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/z0mbix/fmn/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/z0mbix/fmn/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/z0mbix/fmn/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/z0mbix/fmn/releases/tag/v0.1.0

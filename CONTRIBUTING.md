@@ -39,10 +39,11 @@ regression signals rather than hard timing gates because hosts differ.
 
 ## Releases
 
-1. Run `just release-check`.
-2. Update `CHANGELOG.md` and the version in `Cargo.toml`.
+1. Update `CHANGELOG.md`, the version in `Cargo.toml`, and both Cargo lockfiles.
+2. Run `just release-check`.
 3. Run `dist plan` and inspect the artifact matrix.
-4. Commit the release, create an annotated `vX.Y.Z` tag, and push it.
+4. Merge the release PR after the required checks pass. Create a signed,
+   annotated `vX.Y.Z` tag on the merged release commit and push it.
 5. Verify checksums, GitHub artifact attestations, and installation on one
    clean macOS and Linux host, plus FreeBSD 15.0 and 15.1 on both architectures.
 
@@ -57,8 +58,8 @@ FreeBSD amd64 and arm64 use the reusable `freebsd.yml` workflow. It builds on
 15.0 with upstream Rust and packages the native binary with the documentation
 and palette notices. Fresh 15.0 VMs verify the archive with base-system tools.
 Fresh 15.1 VMs run the complete native suite and exercise the packaged binary's
-shell integration and terminal recovery. These jobs gate publication. Initial
-native qualification is pending. See [the FreeBSD release notes](docs/freebsd.md).
+shell integration and terminal recovery. These jobs gate publication. See
+[the FreeBSD release notes](docs/freebsd.md).
 
 FreeBSD assets are registered through `extra-artifacts`; they are deliberately
 absent from cargo-dist's builtin target matrix and shell installer. The global

@@ -6,12 +6,9 @@ fast full-screen Ctrl-R search without accounts, sync, or a background service.
 
 ## Status
 
-The utility is implemented and tested on macOS and Linux. Database migrations
-are automatic; back up your database before upgrades.
-
-FreeBSD amd64 and arm64 release builds and native checks for 15.0 and 15.1 are
-configured. They are unreleased and await their first successful CI qualification.
-See [FreeBSD installation and release checks](docs/freebsd.md).
+Release builds are tested on macOS, Linux, and FreeBSD 15.0 and 15.1 on amd64
+and arm64. See [FreeBSD installation and release checks](docs/freebsd.md).
+Database migrations are automatic. Back up your database before upgrades.
 
 ## Features
 
@@ -53,7 +50,7 @@ curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/z0mbix/fmn/releases/latest/download/fmn-installer.sh | sh
 ```
 
-The next qualified release also provides FreeBSD archives for amd64
+Starting with v0.3.0, releases also provide FreeBSD archives for amd64
 (`x86_64-unknown-freebsd`) and arm64 (`aarch64-unknown-freebsd`). FreeBSD uses
 [manual archive installation](docs/freebsd.md#installation); the generated
 shell installer does not install those archives.

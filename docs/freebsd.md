@@ -1,7 +1,6 @@
 # FreeBSD releases
 
-Status: **implemented in the release pipeline; initial native CI qualification
-pending**. These changes have not been published in a release yet.
+FreeBSD archives are available starting with **v0.3.0**.
 
 The release pipeline builds on FreeBSD **15.0** for both **amd64** and **arm64**,
 then verifies those exact archives on fresh **15.0** and **15.1** VMs. It does not
@@ -10,9 +9,8 @@ the verifier rejects linkage to libraries outside the FreeBSD base system.
 
 ## Installation
 
-Once a release containing the FreeBSD assets has passed qualification, download
-the archive and matching SHA-256 file from the GitHub release. The asset names
-use Rust's architecture names:
+Download the archive and matching SHA-256 file from the GitHub release. The
+asset names use Rust's architecture names:
 
 | FreeBSD architecture | Archive |
 | --- | --- |
@@ -87,8 +85,6 @@ The VM action is pinned to a commit and the guest releases are explicit.
 Keep the 15.0 baseline while it is needed for the target servers; update it
 deliberately when server compatibility requirements change.
 
-Before calling the first release qualified, record successful native CI runs
-and check search, Unicode input, resize, overlays, and shell insertion over SSH
-in a real terminal. After an authorized release, download and verify the public
-archives and their GitHub attestations. No initial native CI or public-release
-result is claimed by this document.
+For each release, check search, Unicode input, resize, overlays, and shell
+insertion over SSH in a real terminal. Download the public archives and verify
+their GitHub attestations after publication.
