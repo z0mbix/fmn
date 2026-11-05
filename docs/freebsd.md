@@ -57,20 +57,19 @@ Cargo installation can run as your normal user.
 
 ## Release qualification
 
-- `freebsd.yml` runs formatting, Clippy, all Rust tests (including SQLite
-  concurrency, shell PTYs, and signal/panic terminal recovery), Python release
-  tests, and ShellCheck before building with the locked dependencies and dist
-  profile. It installs pinned, checksum-verified Rust components from Rust's
-  upstream distribution for both architectures. The toolchain, OS,
-  architecture, and shell versions are logged.
+- `freebsd.yml` builds on the 15.0 base system with locked dependencies and the
+  dist profile. It installs pinned, checksum-verified Rust components from
+  Rust's upstream distribution for both architectures. The Linux runner
+  packages the resulting native binaries.
 - Archives contain the executable, README, changelog, MIT license, theme
   catalogue, and all bundled palette notices. Checksums use the portable
   `SHA256  filename` format.
-- `verify-freebsd.yml` boots fresh VMs for all four OS/architecture combinations.
-  It verifies checksums, archive contents, dynamic linkage, version, diagnostics,
-  and a record/finish/list round trip. It uses the unpacked executable for Fish,
-  Zsh, and Bash insertion, opt-in execution, cancellation, and terminal recovery
-  after interrupt, hangup, and repeated termination signals.
+- `verify-freebsd.yml` checks the archives on fresh VMs for all four
+  OS/architecture combinations. The 15.0 checks use base tools to verify
+  checksums, linkage, version, diagnostics, and a history round trip. The
+  current package repository supplies Fish and Rust built against 15.1's libc,
+  so formatting, Clippy, Rust and Python tests, ShellCheck, and the packaged
+  binary's shell and terminal tests run on 15.1 on both architectures.
 - cargo-dist 0.31.0 registers these archives and checksum files as additional
   release assets. Its global build requires both validated architectures, and
   its host stage waits for native qualification before attesting and publishing.

@@ -35,7 +35,7 @@ jobs:
         with:
           path: .freebsd-cache/cargo
           key: freebsd-15.0-${{ matrix.target }}-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
-      - name: Build and test natively in FreeBSD
+      - name: Build against the FreeBSD 15.0 base system
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1, 2026-10-03
         with:
           release: '15.0'
@@ -43,8 +43,6 @@ jobs:
           envs: TARGET RUST_VERSION
           cpu: 2
           mem: 6144
-          prepare: |
-            pkg install -y python3 fish zsh bash expect hs-ShellCheck
           run: |
             set -eu
             # FreeBSD 15 ports packages can use libc symbols introduced in 15.1.
@@ -54,7 +52,7 @@ jobs:
             trap 'rm -rf "$downloads"' EXIT
             (
               cd "$downloads"
-              for component in rustc rust-std cargo clippy rustfmt; do
+              for component in rustc rust-std cargo; do
                 release="$component-$RUST_VERSION-$TARGET"
                 archive="$release.tar.xz"
                 url="https://static.rust-lang.org/dist/$archive"
@@ -74,29 +72,19 @@ jobs:
             # Keep build trees out of the workspace copied back to the host.
             export CARGO_TARGET_DIR=/tmp/fmn-target
             export CARGO_BUILD_JOBS=2
-            export FMN_TEST_BASH=/usr/local/bin/bash
             freebsd-version
             uname -m
             rustc -Vv
             cargo --version
             cc --version
-            fish --version
-            zsh --version
-            bash --version
             test "$(rustc -vV | sed -n 's/^host: //p')" = "$TARGET"
-            cargo fmt --all --check
-            cargo clippy --locked --all-targets --all-features -- -D warnings
-            cargo test --locked --all-targets --all-features
-            python3 -m unittest discover -s tests -p 'test_*.py'
-            cargo run --quiet --locked -- init bash > /tmp/fmn-init.bash
-            shellcheck -s bash /tmp/fmn-init.bash
             cargo build --locked --profile dist --bin fmn
-            python3 scripts/freebsd_release.py package --target "$TARGET" \
-              --binary "$CARGO_TARGET_DIR/dist/fmn"
-            python3 scripts/freebsd_release.py verify --target "$TARGET" \
-              --directory target/freebsd
+            mkdir -p target/freebsd-build
+            cp "$CARGO_TARGET_DIR/dist/fmn" target/freebsd-build/fmn
             # Only the download cache and release output need to return to Linux.
             rm -rf "$CARGO_HOME/registry/src" "$CARGO_HOME/registry/index"
+      - name: Package the native binary
+        run: python3 scripts/freebsd_release.py package --target "$TARGET" --binary target/freebsd-build/fmn
       - uses: actions/upload-artifact@v6
         with:
           name: artifacts-build-local-${{ matrix.target }}
