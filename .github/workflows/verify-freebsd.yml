@@ -24,10 +24,10 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: artifacts-build-local-${{ matrix.target }}
           path: release
