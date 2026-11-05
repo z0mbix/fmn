@@ -9,8 +9,8 @@ fast full-screen Ctrl-R search without accounts, sync, or a background service.
 The utility is implemented and tested on macOS and Linux. Database migrations
 are automatic; back up your database before upgrades.
 
-FreeBSD amd64 and arm64 release builds and native checks for 15.0 and 15.1 are
-configured. They are unreleased and await their first successful CI qualification.
+The release workflow cross-compiles FreeBSD amd64 and arm64 and checks the
+archives on 15.0 and 15.1 before publishing. Initial native qualification is pending.
 See [FreeBSD installation and release checks](docs/freebsd.md).
 
 ## Features
@@ -39,24 +39,22 @@ Install with Homebrew on macOS or Linux:
 brew install z0mbix/tap/fmn
 ```
 
-Build from source with Rust 1.88 or newer:
+Build from a checkout with the Go version in [go.mod](go.mod):
 
 ```sh
-cargo install --locked --path .
+CGO_ENABLED=0 go install ./cmd/fmn
 ```
 
-Tagged releases provide prebuilt macOS and Linux archives and a shell
-installer for those platforms:
+Download an archive from the [releases page](https://github.com/z0mbix/fmn/releases).
+The release installer detects macOS, Linux, and FreeBSD and checks the archive's
+SHA-256 checksum. Set `FMN_INSTALL_DIR` to choose the destination.
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/z0mbix/fmn/releases/latest/download/fmn-installer.sh | sh
 ```
 
-The next qualified release also provides FreeBSD archives for amd64
-(`x86_64-unknown-freebsd`) and arm64 (`aarch64-unknown-freebsd`). FreeBSD uses
-[manual archive installation](docs/freebsd.md#installation); the generated
-shell installer does not install those archives.
+See the [FreeBSD guide](docs/freebsd.md) for manual archive installation.
 
 Then add one line to the appropriate interactive shell configuration:
 
@@ -155,7 +153,7 @@ Ctrl-U clears it. Use Up/Down, Page Up/Down, Home/End, or the mouse wheel to
 preview matches. Enter or a click applies the theme and saves it as the
 default in your config file, creating the file if needed. Other settings and
 comments are preserved. Escape cancels the preview without saving. A nonempty
-`NO_COLOR` starts with No colour. See the [theme catalogue and palette sources](src/tui/THEMES.md)
+`NO_COLOR` starts with No colour. See the [theme catalogue and palette sources](docs/themes/THEMES.md)
 for every config name and attribution notice.
 
 To start without colours, run `NO_COLOR=1 fmn search` or export `NO_COLOR=1`
@@ -270,17 +268,14 @@ just check
 Additional suites:
 
 ```sh
-just coverage  # requires cargo-llvm-cov and llvm-tools-preview; 90% line gate
+just coverage
 just stress
-just bench
-just fuzz import_parse
-just mutants
-just deny
+just fuzz
+just release-check
 ```
 
-Tests include deterministic unit and render tests, CLI integration tests,
-property tests, concurrent SQLite writers, generated-shell syntax checks, and
-real interactive PTY tests for all three shells. See [CONTRIBUTING.md](CONTRIBUTING.md)
+Tests cover SQLite migrations and concurrent writers, imports, CLI and terminal
+behaviour, preferences, and archive checksums. See [CONTRIBUTING.md](CONTRIBUTING.md)
 for setup and release guidance.
 
 ## License

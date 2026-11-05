@@ -12,42 +12,40 @@ jobs:
   fuzz:
     name: Fuzz ${{ matrix.target }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
-        target: [import_parse, config_parse, tui_state]
+        include:
+          - package: ./internal/importer
+            target: FuzzNativeHistory
+          - package: ./cmd/fmn
+            target: FuzzConfig
+          - package: ./internal/search
+            target: FuzzPattern
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+          persist-credentials: false
+      - uses: actions/setup-go@v6
         with:
-          tool: cargo-fuzz
-      - run: cargo +nightly fuzz run ${{ matrix.target }} --target x86_64-unknown-linux-gnu -- -max_total_time=300
-
-  mutation:
-    name: Mutation testing
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install shell test dependencies
-        run: sudo apt-get update && sudo apt-get install -y fish zsh expect
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-mutants
-      - run: cargo mutants --workspace
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go test -mod=readonly "$PACKAGE" -run '^$' -fuzz "^$TARGET$" -fuzztime 5m
+        env:
+          PACKAGE: ${{ matrix.package }}
+          TARGET: ${{ matrix.target }}
 
   stress:
     name: SQLite concurrency stress
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Repeat concurrent writer test
-        run: for attempt in $(seq 1 20); do cargo test --test concurrency; done
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go test -mod=readonly -count=20 -run TestConcurrent ./internal/history

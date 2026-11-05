@@ -3,7 +3,7 @@ name: Publish Homebrew formula
 on:
   workflow_call:
     inputs:
-      plan:
+      release_tag:
         required: true
         type: string
     secrets:
@@ -31,7 +31,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      RELEASE_TAG: ${{ inputs.release_tag || fromJSON(inputs.plan).announcement_tag }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@v6
         with:
