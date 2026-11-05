@@ -72,7 +72,11 @@ jobs:
           arch: ${{ matrix.arch }}
           envs: TARGET VERSION
           copyback: false
-          prepare: pkg install -y python3 fish zsh bash expect git
+          prepare: |
+            set -eu
+            pkg install -y python3 fish zsh bash expect git
+            sqlite_package=$(/usr/local/bin/python3 -c 'import sys; print(f"py{sys.version_info.major}{sys.version_info.minor}-sqlite3")')
+            pkg install -y "$sqlite_package"
           run: |
             set -eu
             export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
