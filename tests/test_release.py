@@ -6,7 +6,7 @@ import tarfile
 import tempfile
 import unittest
 
-from scripts.release import TARGETS, archive_name, checksum, package, validate_archive
+from bin.release import TARGETS, archive_name, checksum, package, validate_archive
 
 
 class ReleaseTests(unittest.TestCase):
@@ -63,7 +63,7 @@ class ReleaseTests(unittest.TestCase):
             "FIXTURES": str(self.source),
             "PATH": f"{tools}:{os.environ['PATH']}",
         }
-        installer = Path(__file__).resolve().parents[1] / "scripts/install.sh"
+        installer = Path(__file__).resolve().parents[1] / "bin/install.sh"
         subprocess.run(["sh", installer], env=environment, check=True, capture_output=True)
         installed = destination / "fmn"
         self.assertEqual(installed.read_bytes(), self.binary.read_bytes())

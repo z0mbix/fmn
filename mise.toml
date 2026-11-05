@@ -2,4 +2,4 @@
 go = "1.27.3"
 
 [env]
-_.path = ["./target/debug"]
+_.path = ["./bin"]

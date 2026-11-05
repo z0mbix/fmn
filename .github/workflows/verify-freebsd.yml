@@ -82,7 +82,7 @@ jobs:
             export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
             freebsd-version
             uname -m
-            python3 scripts/release.py verify --target "$TARGET" --version "$VERSION" --directory release
+            python3 bin/release.py verify --target "$TARGET" --version "$VERSION" --directory release
             tar -xf "release/fmn-$TARGET.tar.xz" -C release
             export FMN_TEST_BIN="$PWD/release/fmn-$TARGET/fmn"
             python3 -m unittest discover -s tests -p 'test_*.py'

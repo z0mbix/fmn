@@ -46,7 +46,7 @@ jobs:
           python3 - <<'PY'
           import json
           import os
-          from scripts.homebrew_formula import validate_release
+          from bin.homebrew_formula import validate_release
 
           with open("release.json") as source:
               release = json.load(source)
@@ -73,7 +73,7 @@ jobs:
           ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
       - name: Verify archives and generate formula
         if: steps.release.outputs.publish == 'true'
-        run: python3 scripts/homebrew_formula.py "$RELEASE_TAG" release homebrew-tap/Formula/fmn.rb
+        run: python3 bin/homebrew_formula.py "$RELEASE_TAG" release homebrew-tap/Formula/fmn.rb
       - name: Commit and publish formula
         if: steps.release.outputs.publish == 'true'
         shell: bash

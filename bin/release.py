@@ -116,7 +116,7 @@ def build(version, directory):
         (archives / "sha256.sum").write_text("".join(
             (archives / f"{archive_name(target)}.sha256").read_text() for target in TARGETS
         ))
-        shutil.copyfile(ROOT / "scripts/install.sh", archives / "fmn-installer.sh")
+        shutil.copyfile(ROOT / "bin/install.sh", archives / "fmn-installer.sh")
         directory.mkdir(parents=True, exist_ok=True)
         for file in archives.iterdir():
             shutil.copyfile(file, directory / file.name)
@@ -162,7 +162,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     compile_all = commands.add_parser("build")
     compile_all.add_argument("--version", default="go-dev")
-    compile_all.add_argument("--directory", type=Path, default=ROOT / "target/distrib")
+    compile_all.add_argument("--directory", type=Path, default=ROOT / "bin/dist")
     check = commands.add_parser("verify")
     check.add_argument("--target", choices=TARGETS, required=True)
     check.add_argument("--directory", type=Path, required=True)

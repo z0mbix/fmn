@@ -39,4 +39,4 @@ jobs:
           name: fmn-release-archives
           path: release
       - name: Check the checksum and run the packaged binary
-        run: python3 scripts/release.py verify --target "$TARGET" --version "$VERSION" --directory release
+        run: python3 bin/release.py verify --target "$TARGET" --version "$VERSION" --directory release

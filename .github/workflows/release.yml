@@ -39,11 +39,11 @@ jobs:
       - name: Cross-compile and package the six targets
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: python3 scripts/release.py build --version "$VERSION"
+        run: python3 bin/release.py build --version "$VERSION"
       - uses: actions/upload-artifact@v6
         with:
           name: fmn-release-archives
-          path: target/distrib/
+          path: bin/dist/
           if-no-files-found: error
 
   verify:

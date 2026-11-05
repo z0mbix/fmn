@@ -3,13 +3,13 @@
 Use the Go version in `go.mod`, Python 3, Just, Fish, Zsh, Bash, Expect, and
 ShellCheck. Run `just check` before opening a PR. It formats nothing in place
 and runs Go unit tests, CLI tests, and real terminal tests for the shell hooks.
-Use `just build` to put the local executable at `target/debug/fmn`.
+Use `just build` to put the local executable at `bin/fmn`.
 
 Use `just coverage` to combine Go unit coverage with coverage collected from
-CLI and terminal subprocesses. CI requires 80% statement coverage. Run
-`just stress` for repeated SQLite concurrency
-checks. Run `just fuzz` for the native import parser, or pass a package and fuzz
-target for configuration and search.
+CLI and terminal subprocesses. Reports go in `bin/coverage/`. CI requires 80%
+statement coverage. Run `just stress` for repeated SQLite concurrency checks.
+Run `just fuzz` for the native import parser, or pass a package and fuzz target
+for configuration and search.
 
 Keep changes focused and test them at the lowest useful layer. SQLite schema
 changes require an append-only migration and an upgrade test. Shell changes
@@ -18,7 +18,7 @@ must keep the syntax and interactive checks green.
 ## Releases
 
 1. Update `CHANGELOG.md`.
-2. Run `just release-check` to test and build all six archives. Use
+2. Run `just release-check` to test and build all six archives in `bin/dist/`. Use
    `just dist 1.2.3` to build locally with a specific binary version.
 3. Commit the release changes, then create and push an annotated `vX.Y.Z` tag.
 4. Check the release workflow and verify the published checksums and attestations.

@@ -13,7 +13,7 @@ from support.terminal_recovery import run as terminal_run
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = Path(os.environ.get("FMN_TEST_BIN", ROOT / "target/debug/fmn")).resolve()
+BINARY = Path(os.environ.get("FMN_TEST_BIN", ROOT / "bin/fmn")).resolve()
 
 
 class CLITests(unittest.TestCase):
