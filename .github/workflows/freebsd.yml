@@ -26,6 +26,7 @@ jobs:
             target: aarch64-unknown-freebsd
     env:
       TARGET: ${{ matrix.target }}
+      RUST_VERSION: '1.99.1'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -33,46 +34,57 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .freebsd-cache/cargo
-          key: freebsd-15.0-${{ matrix.target }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-      - name: Build and test natively in FreeBSD
+          key: freebsd-15.0-${{ matrix.target }}-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build against the FreeBSD 15.0 base system
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1, 2026-10-03
         with:
           release: '15.0'
           arch: ${{ matrix.arch }}
-          envs: TARGET
+          envs: TARGET RUST_VERSION
           cpu: 2
           mem: 6144
-          prepare: |
-            pkg install -y rust python3 just fish zsh bash expect hs-ShellCheck
           run: |
             set -eu
-            export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
+            # FreeBSD 15 ports packages can use libc symbols introduced in 15.1.
+            # Install upstream Rust components so rustc also runs on the 15.0 VM.
+            rust_prefix=/tmp/fmn-rust
+            downloads=$(mktemp -d)
+            trap 'rm -rf "$downloads"' EXIT
+            (
+              cd "$downloads"
+              for component in rustc rust-std cargo; do
+                release="$component-$RUST_VERSION-$TARGET"
+                archive="$release.tar.xz"
+                url="https://static.rust-lang.org/dist/$archive"
+                fetch "$url" "$url.sha256"
+                expected=$(awk 'NR == 1 { print $1 }' "$archive.sha256")
+                if [ "$(sha256 -q "$archive")" != "$expected" ]; then
+                  echo "Rust component checksum mismatch: $archive" >&2
+                  exit 1
+                fi
+                tar -xf "$archive"
+                sh "$release/install.sh" --prefix="$rust_prefix" --disable-ldconfig
+                rm -rf "$release" "$archive" "$archive.sha256"
+              done
+            )
+            export PATH="$rust_prefix/bin:/usr/local/bin:/usr/local/sbin:$PATH"
             export CARGO_HOME="$PWD/.freebsd-cache/cargo"
             # Keep build trees out of the workspace copied back to the host.
             export CARGO_TARGET_DIR=/tmp/fmn-target
             export CARGO_BUILD_JOBS=2
-            export FMN_TEST_BASH=/usr/local/bin/bash
             freebsd-version
             uname -m
             rustc -Vv
             cargo --version
             cc --version
-            fish --version
-            zsh --version
-            bash --version
             test "$(rustc -vV | sed -n 's/^host: //p')" = "$TARGET"
-            cargo fmt --all --check
-            cargo clippy --locked --all-targets --all-features -- -D warnings
-            cargo test --locked --all-targets --all-features
-            just test-release
-            just shellcheck
             cargo build --locked --profile dist --bin fmn
-            python3 scripts/freebsd_release.py package --target "$TARGET" \
-              --binary "$CARGO_TARGET_DIR/dist/fmn"
-            python3 scripts/freebsd_release.py verify --target "$TARGET" \
-              --directory target/freebsd
+            mkdir -p target/freebsd-build
+            cp "$CARGO_TARGET_DIR/dist/fmn" target/freebsd-build/fmn
             # Only the download cache and release output need to return to Linux.
             rm -rf "$CARGO_HOME/registry/src" "$CARGO_HOME/registry/index"
+      - name: Package the native binary
+        run: python3 scripts/freebsd_release.py package --target "$TARGET" --binary target/freebsd-build/fmn
       - uses: actions/upload-artifact@v6
         with:
           name: artifacts-build-local-${{ matrix.target }}
@@ -84,3 +96,20 @@ jobs:
   verify:
     needs: build
     uses: ./.github/workflows/verify-freebsd.yml
+
+  qualify:
+    name: FreeBSD qualification
+    needs: [build, verify]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    env:
+      BUILD_RESULT: ${{ needs.build.result }}
+      VERIFY_RESULT: ${{ needs.verify.result }}
+    steps:
+      - name: Require both builds and all archive checks
+        run: |
+          if [ "$BUILD_RESULT" != success ] || [ "$VERIFY_RESULT" != success ]; then
+            printf 'FreeBSD build result: %s\nFreeBSD verification result: %s\n' "$BUILD_RESULT" "$VERIFY_RESULT" >&2
+            exit 1
+          fi

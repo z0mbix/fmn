@@ -54,11 +54,11 @@ is checksum-verified and runs `--version` and `doctor` on its native macOS or
 Linux architecture before the GitHub release is published.
 
 FreeBSD amd64 and arm64 use the reusable `freebsd.yml` workflow. It builds on
-15.0, runs the complete native test suite, and packages bundled SQLite together
-with the documentation and palette notices. Fresh 15.0 and 15.1 VMs then verify
-the archives, base-system linkage, history round trips, shell integration, and
-terminal recovery. These jobs gate publication. Initial native qualification is
-pending; see [the FreeBSD release notes](docs/freebsd.md).
+15.0 with upstream Rust and packages the native binary with the documentation
+and palette notices. Fresh 15.0 VMs verify the archive with base-system tools.
+Fresh 15.1 VMs run the complete native suite and exercise the packaged binary's
+shell integration and terminal recovery. These jobs gate publication. Initial
+native qualification is pending. See [the FreeBSD release notes](docs/freebsd.md).
 
 FreeBSD assets are registered through `extra-artifacts`; they are deliberately
 absent from cargo-dist's builtin target matrix and shell installer. The global

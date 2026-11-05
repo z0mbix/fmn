@@ -10,7 +10,7 @@ jobs:
   verify:
     name: FreeBSD ${{ matrix.release }} (${{ matrix.target }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +21,8 @@ jobs:
             target: x86_64-unknown-freebsd
           - arch: aarch64
             target: aarch64-unknown-freebsd
+    env:
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -29,17 +31,81 @@ jobs:
         with:
           name: artifacts-build-local-${{ matrix.target }}
           path: release
-      - name: Verify packaged binary in a fresh FreeBSD VM
+      - name: Check archive contents and read expected version
+        run: |
+          python3 - "$TARGET" <<'PY' >> "$GITHUB_ENV"
+          import sys
+          import tomllib
+          from pathlib import Path
+          from scripts.freebsd_release import validate_archive
+
+          validate_archive(Path("release"), sys.argv[1])
+          version = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
+          print(f"RELEASE_VERSION={version}")
+          PY
+      - name: Verify archive on the FreeBSD 15.0 base system
+        if: matrix.release == '15.0'
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1, 2026-10-03
         with:
           release: ${{ matrix.release }}
           arch: ${{ matrix.arch }}
+          envs: TARGET RELEASE_VERSION
+          copyback: false
+          run: |
+            set -eu
+            freebsd-version
+            uname -m
+            archive="release/fmn-$TARGET.tar.xz"
+            test "$(sha256 -q "$archive")" = "$(awk 'NR == 1 { print $1 }' "$archive.sha256")"
+            smoke=$(mktemp -d)
+            trap 'rm -rf "$smoke"' EXIT
+            tar -xf "$archive" -C "$smoke"
+            binary="$smoke/fmn-$TARGET/fmn"
+            file "$binary"
+            linkage=$(ldd "$binary")
+            printf '%s\n' "$linkage"
+            printf '%s\n' "$linkage" | awk '/=>/ && $3 !~ /^\/(lib|usr\/lib|libexec)\// { bad = 1 } END { exit bad }'
+            export FMN_DATA_DIR="$smoke/history" FMN_CONFIG="$smoke/config.toml"
+            test "$("$binary" --version)" = "fmn $RELEASE_VERSION"
+            "$binary" doctor
+            printf '%s' 'echo release-smoke' | "$binary" _record-start \
+              --shell bash --session release-smoke --cwd "$smoke" --started-at 1700000000000
+            "$binary" _record-finish --session release-smoke --exit-code 7 --finished-at 1700000000100
+            entries=$("$binary" history list --json)
+            printf '%s\n' "$entries" | grep -Fq '"command": "echo release-smoke"'
+            printf '%s\n' "$entries" | grep -Fq '"exit_code": 7'
+      - name: Run the native suite and verify the archive on FreeBSD 15.1
+        if: matrix.release == '15.1'
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1, 2026-10-03
+        with:
+          release: ${{ matrix.release }}
+          arch: ${{ matrix.arch }}
+          envs: TARGET
+          cpu: 2
+          mem: 6144
+          copyback: false
           prepare: |
-            pkg install -y python3 fish zsh bash expect
+            set -eu
+            pkg install -y rust git python3 fish zsh bash expect hs-ShellCheck
+            # The terminal recovery tests open an inherited descriptor via /dev/fd.
+            if ! mount -p | awk '$2 == "/dev/fd" && $3 == "fdescfs" { found = 1 } END { exit !found }'; then
+              mount -t fdescfs fdesc /dev/fd
+            fi
           run: |
             set -eu
             export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
+            export CARGO_TARGET_DIR=/tmp/fmn-target CARGO_BUILD_JOBS=2
+            export FMN_TEST_BASH=/usr/local/bin/bash
             freebsd-version
             uname -m
-            python3 scripts/freebsd_release.py verify \
-              --target '${{ matrix.target }}' --directory release
+            rustc -Vv
+            fish --version
+            zsh --version
+            bash --version
+            cargo fmt --all --check
+            cargo clippy --locked --all-targets --all-features -- -D warnings
+            cargo test --locked --all-targets --all-features
+            python3 -m unittest discover -s tests -p 'test_*.py'
+            cargo run --quiet --locked -- init bash > /tmp/fmn-init.bash
+            shellcheck -s bash /tmp/fmn-init.bash
+            python3 scripts/freebsd_release.py verify --target "$TARGET" --directory release
