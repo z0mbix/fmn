@@ -38,7 +38,7 @@ jobs:
           path: release
       - name: Verify the archive on the FreeBSD 15.0 base system
         if: matrix.release == '15.0'
-        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # v1
         with:
           release: ${{ matrix.release }}
           arch: ${{ matrix.arch }}
@@ -66,7 +66,7 @@ jobs:
             printf '%s\n' "$entries" | grep -Fq '"exit_code": 7'
       - name: Run CLI and shell tests against the archive on FreeBSD 15.1
         if: matrix.release == '15.1'
-        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # v1
         with:
           release: ${{ matrix.release }}
           arch: ${{ matrix.arch }}
